@@ -1,0 +1,43 @@
+# Cross-compile environment for the ZCU104 Rust server.
+#
+# Ubuntu 22.04 is chosen because its glibc (2.35) matches what Yocto kirkstone
+# ships on the board — so the resulting binary won't fail with "GLIBC_2.XX not
+# found" at runtime. If your image uses a different Yocto release, change the
+# base tag accordingly: jammy=22.04 (kirkstone), bionic=18.04 (older Petalinux),
+# noble=24.04 (scarthgap).
+
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# --- Build dependencies + aarch64 cross-toolchain --------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl pkg-config \
+        build-essential \
+        gcc-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Rust toolchain --------------------------------------------------------
+# Installed under /opt so a host-UID container user (--user $(id -u)) can still
+# read it. The a+rwX chmod makes the cargo cache writable by any UID; this is
+# fine in a single-purpose build container.
+
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        sh -s -- -y --no-modify-path --default-toolchain stable \
+    && rustup target add aarch64-unknown-linux-gnu \
+    && mkdir -p /opt/cargo/registry /opt/cargo/git \
+    && chmod -R a+rwX /opt/rust /opt/cargo
+
+# --- Cross-linker config ---------------------------------------------------
+# Setting it via env var means it overrides any project-level .cargo/config.toml
+# and works regardless of where the project is mounted.
+
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+
+WORKDIR /work
+CMD ["cargo", "build", "--release", "--target", "aarch64-unknown-linux-gnu"]

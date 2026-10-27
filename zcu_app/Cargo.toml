@@ -1,0 +1,32 @@
+cargo-features = ["edition2024"]
+
+[package]
+name = "zcu_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde   = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+libc = { version = "0.2.186", optional = true }
+gpio-cdev = { version = "0.6.0", optional = true }
+dirs = "6.0.0"
+bytemuck = { version = "1.25.2", features = ["zeroable_maybe_uninit", "derive"] }
+
+# "hardware" gates everything that touches real ZCU104 peripherals: the
+# gpio-cdev-based EMIO reset/beam/calibration lines (gpio.rs) and the
+# libc mmap()-based PL DDR4 access (ram.rs). Both depend on Linux-only
+# APIs (character-device ioctls, /dev/mem + mmap) that don't exist on
+# Windows/macOS, so this feature is what lets the same source build on a
+# dev machine: `cargo build --no-default-features` swaps in the
+# software-only simulated backends already used by SIMULATION_MODE.
+#
+# On by default so the existing cross-compile build (build-cross.sh /
+# Dockerfile.cross) needs no changes - it never passes --features, so it
+# keeps getting real hardware support automatically.
+[features]
+debug = []
+#default = ["hardware"]
+default = []
+hardware = ["libc", "gpio-cdev"]

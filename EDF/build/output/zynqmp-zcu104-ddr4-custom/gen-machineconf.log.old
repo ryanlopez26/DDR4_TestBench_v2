@@ -1,0 +1,6 @@
+2026-05-25 21:18:31,318 - [DEBUG] Getting bitbake variable STAGING_DIR_NATIVE from kconfig-frontends-native
+2026-05-25 21:18:31,318 - [DEBUG] Bitbake parsing recipes
+2026-05-25 21:18:31,921 - [DEBUG] Shutting down bitbake
+2026-05-25 21:18:35,025 - [ERROR] The tool mconf is required but not found.  This is usually built with the bitbake target of kconfig-frontends-native.
+Unable to get required kconfig-frontends-native sysroot path
+2026-05-25 21:18:35,025 - [DEBUG] Shutting down bitbake

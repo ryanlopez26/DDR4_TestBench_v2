@@ -1,0 +1,15 @@
+[Unit]
+Description=Grow the /dvr partition to fill the SD card (first boot)
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=systemd-remount-fs.service systemd-udevd.service
+Before=dvr.mount shutdown.target
+ConditionPathExists=!/var/lib/dvr-resized
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/dvr-grow
+
+[Install]
+WantedBy=local-fs.target

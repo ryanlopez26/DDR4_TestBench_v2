@@ -1,0 +1,96 @@
+#!/bin/sh
+# dvr-grow - one-shot: expand the /dvr partition to the end of the SD card.
+#
+# The .wic ships /dvr at a token size so the image stays small. This runs once on
+# first boot, grows the partition entry to fill the card and reformats it FAT32.
+# Ordered before dvr.mount so /dvr is only ever mounted at its final size.
+set -eu
+
+LABEL=DVR
+MARKER=/var/lib/dvr-resized
+FALLBACK_PARTNUM=3
+MIN_GROW_MIB=64
+
+log() { echo "dvr-grow: $*" ; }
+
+if [ -e "$MARKER" ]; then
+    log "marker $MARKER present, nothing to do"
+    exit 0
+fi
+
+# --- locate the partition -------------------------------------------------
+part=$(blkid -L "$LABEL" 2>/dev/null || true)
+if [ -z "$part" ] || [ ! -b "$part" ]; then
+    # No label yet, or a card formatted elsewhere: fall back to partition
+    # FALLBACK_PARTNUM on whichever disk carries the rootfs.
+    rootpart=$(findmnt -no SOURCE / 2>/dev/null | sed 's/\[.*\]$//' || true)
+    if [ -n "$rootpart" ]; then
+        rootname=$(basename "$(readlink -f "$rootpart")")
+        diskname=$(basename "$(readlink -f "/sys/class/block/$rootname/..")")
+        part="/dev/${diskname}p${FALLBACK_PARTNUM}"
+        [ -b "$part" ] || part="/dev/${diskname}${FALLBACK_PARTNUM}"
+    fi
+fi
+
+if [ -z "$part" ] || [ ! -b "$part" ]; then
+    log "no /dvr partition found, giving up"
+    exit 0
+fi
+
+pname=$(basename "$part")
+disk=$(basename "$(readlink -f "/sys/class/block/$pname/..")")
+partnum=$(cat "/sys/class/block/$pname/partition")
+
+# --- how much room is left after it? --------------------------------------
+# sysfs reports these in 512-byte sectors regardless of logical block size.
+disk_sectors=$(cat "/sys/class/block/$disk/size")
+part_start=$(cat "/sys/class/block/$pname/start")
+part_sectors=$(cat "/sys/class/block/$pname/size")
+free_mib=$(( (disk_sectors - part_start - part_sectors) / 2048 ))
+
+if [ "$free_mib" -lt "$MIN_GROW_MIB" ]; then
+    log "$free_mib MiB free after $part, already at full size"
+    mkdir -p "$(dirname "$MARKER")"
+    touch "$MARKER"
+    exit 0
+fi
+
+# --- does it already hold data? -------------------------------------------
+# A card that was flashed and then loaded with bitstreams from a Windows box
+# before its first boot must not be reformatted out from under the user.
+has_data=no
+mnt=$(mktemp -d)
+if mount -t vfat -o ro "$part" "$mnt" 2>/dev/null; then
+    if [ -n "$(ls -A "$mnt" 2>/dev/null)" ]; then
+        has_data=yes
+    fi
+    umount "$mnt"
+fi
+rmdir "$mnt"
+
+# --- grow the partition entry ---------------------------------------------
+# -N touches only this entry; ",+" keeps the start and claims all remaining
+# space. --no-reread/--no-tell-kernel skip BLKRRPART, which returns EBUSY
+# because the rootfs on this same disk is mounted; partx -u then refreshes
+# just the one partition.
+log "growing $part by $free_mib MiB"
+echo ',+' | sfdisk --no-reread --no-tell-kernel -N "$partnum" "/dev/$disk"
+partx -u "/dev/$disk"
+
+# --- resize or reformat the filesystem ------------------------------------
+if [ "$has_data" = no ]; then
+    log "reformatting $part as FAT32"
+    mkfs.vfat -F 32 -n "$LABEL" "$part"
+elif command -v fatresize >/dev/null 2>&1; then
+    log "$part has data, growing filesystem in place"
+    fatresize -s max "$part"
+else
+    log "WARNING: $part has data and fatresize is not installed."
+    log "WARNING: partition grown, filesystem left at its previous size."
+    log "WARNING: back up /dvr, then run: mkfs.vfat -F 32 -n $LABEL $part"
+fi
+
+udevadm settle || true
+mkdir -p "$(dirname "$MARKER")"
+touch "$MARKER"
+log "done"

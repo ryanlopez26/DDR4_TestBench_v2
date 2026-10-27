@@ -1,0 +1,22 @@
+# short-description: ZCU104 DDR4 tester SD card, with a Windows-readable /dvr volume
+# long-description:
+# MBR layout, three primary partitions:
+#   p1  "boot"  vfat   BOOT.BIN / Image / system.dtb. The ZynqMP BootROM reads
+#                      BOOT.BIN from the first FAT partition, so this stays p1.
+#   p2  "root"  ext4   Linux rootfs. Windows cannot read this and will offer to
+#                      format it when the card is inserted -- do not accept.
+#   p3  "DVR"   vfat   Mounted at /dvr. FAT32 so the card can be pulled and read
+#                      directly on a Windows host.
+# --align is in KiB; 4096 keeps partitions on 4 MiB SD erase-block boundaries.
+
+part /boot --source bootimg-partition --ondisk mmcblk --fstype=vfat --label boot --active --align 4096 --fixed-size 128M
+
+part / --source rootfs --ondisk mmcblk --fstype=ext4 --label root --align 4096
+
+# No --source: wic formats an empty FAT32 filesystem. Size for the smallest card
+# in the pile; growing p3 later needs parted + fatresize on a host.
+part /dvr --ondisk mmcblk --fstype=vfat --label DVR --align 4096 --fixed-size 64M \
+     --mkfs-extraopts "-F 32" \
+     --fsoptions "rw,nofail,noatime,uid=0,gid=0,umask=0022,shortname=mixed,utf8,flush,x-systemd.device-timeout=15"
+
+bootloader --ptable msdos

@@ -1,0 +1,1 @@
+cp -f zcu_server ../EDF/sources/meta-zcu104-ddr4/recipes-apps/zcu-server/files/zcu-server

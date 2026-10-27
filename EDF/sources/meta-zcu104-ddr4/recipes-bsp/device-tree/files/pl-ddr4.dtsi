@@ -1,0 +1,12 @@
+/ {
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        pl_ddr4: pl_ddr4@400000000 {
+            reg = <0x4 0x00000000 0x0 0x40000000>;
+            no-map;
+        };
+    };
+};
