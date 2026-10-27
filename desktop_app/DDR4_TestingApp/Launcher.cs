@@ -1,9 +1,10 @@
-﻿#nullable enable
+#nullable enable
 
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -54,6 +55,9 @@ namespace DDR4_TestingApp
         private static readonly Color FlashRed = Color.FromArgb(0xC0, 0x39, 0x2B);
         private static readonly Color FlashOrange = Color.FromArgb(0xE6, 0x7E, 0x22);
 
+        /// <summary>Accepted by the server but not yet acted on by the task engine.</summary>
+        private static readonly Color RequestedColor = Color.FromArgb(0xD6, 0x89, 0x10);
+
         private static readonly Color ModeSelected = TrueColor;
         private static readonly Color ModeUnselected = Color.Black;
 
@@ -77,6 +81,15 @@ namespace DDR4_TestingApp
         /// </summary>
         private bool restartInProgress;
         private DateTime restartOpenedAtUtc;
+
+        /// <summary>
+        /// A power state asked for with the PWR buttons that the server has accepted
+        /// but not yet acted on. The engine only reaches its power check BETWEEN tasks,
+        /// so a request issued mid-run sits for the rest of that run while GETPOWERMODE
+        /// keeps reporting nothing — without this the UI would read SYSTEM OPERATIONAL
+        /// the whole time and the button press would look like it did nothing.
+        /// </summary>
+        private PowerRequest? pendingRequest;
 
         /// <summary>
         /// The board must ask for a normal state before it may reboot itself again.
@@ -121,6 +134,8 @@ namespace DDR4_TestingApp
             ApplyConnectionStatus(TcpManager.Status);
 
             abortButton.Click += AbortButton_Click;
+            requestOff.Click += async (s, e) => await RequestPowerStateAsync(PowerRequest.Shutdown);
+            requestReboot.Click += async (s, e) => await RequestPowerStateAsync(PowerRequest.Reboot);
             powerOn.Click += (s, e) => SetOverrideMode(OverrideMode.On);
             powerAUTO.Click += (s, e) => SetOverrideMode(OverrideMode.Auto);
             powerOFF.Click += (s, e) => SetOverrideMode(OverrideMode.Off);
@@ -194,6 +209,8 @@ namespace DDR4_TestingApp
             restartDelay.Value = 5000;
 
             abortButton.Enabled = false;
+            requestOff.Enabled = false;
+            requestReboot.Enabled = false;
 
             ApplyEngineOffline();
             ApplyInfoOffline();
@@ -303,6 +320,9 @@ namespace DDR4_TestingApp
             bool connected = status == TcpManager.ConnectionStatus.Connected;
             CM_connect.Text = connected ? "Disconnect" : "Connect";
 
+            requestOff.Enabled = connected;
+            requestReboot.Enabled = connected;
+
             // Left editable while retrying so a wrong address can be corrected, but the
             // retry keeps using the last address that actually worked until the operator
             // presses Connect.
@@ -391,10 +411,98 @@ namespace DDR4_TestingApp
             {
                 shutdownLatched = false;
                 restartInProgress = false;
+                pendingRequest = null;
             }
 
             ApplyModeButtons();
             PaintPowerStatus();
+        }
+
+        /// <summary>
+        /// Ask the ZCU to enter a power state (CMD_REQUESTPOWERSTATE). The server only
+        /// records the request: the task engine acts on it at the top of its loop, where
+        /// it unmounts /dvr, hibernates the queue and marks itself safe — and only then
+        /// does GETPOWERMODE start reporting it to the power manager, which opens the
+        /// contactor. So the chain is request -> engine honours -> poll reports ->
+        /// contactor moves, and this method only covers the first link.
+        /// </summary>
+        private async Task RequestPowerStateAsync(PowerRequest state)
+        {
+            if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
+            {
+                MessageBox.Show("Not connected.");
+                return;
+            }
+
+            if (overrideMode != OverrideMode.Auto)
+            {
+                MessageBox.Show(
+                    $"Manual override is set to {overrideMode.ToString().ToUpperInvariant()}, " +
+                    "so the contactor will not follow this request. Switch to AUTO first.",
+                    "Power Request", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string verb = state == PowerRequest.Shutdown ? "shut down" : "reboot";
+
+            // The engine only reaches the power check between tasks, so a request made
+            // mid-run waits for that run to finish. Say so rather than let the operator
+            // conclude the button is broken.
+            bool busy = abortButton.Enabled;   // tracks "engine not idle"
+            string wait = busy
+                ? "A task is currently running. The ZCU will not act on this until " +
+                  "that task finishes — abort it first if you need the change now."
+                : "";
+
+            string consequence = state == PowerRequest.Shutdown
+                ? "The contactor will open and STAY open. Power is restored only by " +
+                  "pressing ON."
+                : $"The contactor will open for {restartDelay.Value} ms and then close.";
+
+            if (MessageBox.Show(
+                    $"Ask the ZCU to {verb}?" +
+                    $"{ consequence}{ wait}",
+                    "Power Request", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+                != DialogResult.Yes)
+                return;
+
+            requestOff.Enabled = false;
+            requestReboot.Enabled = false;
+            try
+            {
+                bool ok = await TcpManager.SetPowerStateAsync(
+                    state, loopCts?.Token ?? CancellationToken.None);
+
+                if (IsDisposed) return;
+
+                if (ok)
+                {
+                    pendingRequest = state;
+                    PaintPowerStatus();
+                }
+                else
+                {
+                    MessageBox.Show(
+                        "The ZCU rejected the request. It only accepts states 0-2.",
+                        "Power Request", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                if (!IsDisposed)
+                    MessageBox.Show($"Power request failed: {ex.Message}", "Power Request",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    bool connected = TcpManager.Status == TcpManager.ConnectionStatus.Connected;
+                    requestOff.Enabled = connected;
+                    requestReboot.Enabled = connected;
+                }
+            }
         }
 
         private void ApplyModeButtons()
@@ -455,6 +563,10 @@ namespace DDR4_TestingApp
                 // after a reboot means it has booted and reconnected on its own.
                 restartInProgress = false;
 
+                // A reboot that completed also retires the pending marker; a shutdown
+                // clears it below, when the flag is first seen.
+                if (pendingRequest == PowerRequest.Reboot) pendingRequest = null;
+
                 // And only then may it ask for another cycle.
                 rebootArmed = true;
                 return;
@@ -469,6 +581,7 @@ namespace DDR4_TestingApp
             {
                 shutdownLatched = true;
                 restartInProgress = false;
+                pendingRequest = null;      // honoured; the latch now tells the story
                 return;
             }
 
@@ -477,6 +590,7 @@ namespace DDR4_TestingApp
                 restartInProgress = true;
                 restartOpenedAtUtc = DateTime.UtcNow;
                 rebootArmed = false;
+                pendingRequest = null;      // honoured; the flash now tells the story
             }
         }
 
@@ -582,6 +696,16 @@ namespace DDR4_TestingApp
             {
                 SetPill(powerStatus, "SYSTEM SHUTDOWN", ShutdownColor);
             }
+            else if (pendingRequest.HasValue)
+            {
+                // Accepted by the server but not yet honoured by the engine. Amber
+                // rather than red: nothing has moved yet and the contactor is still
+                // closed. Delete this branch if you only want the three states.
+                SetPill(powerStatus,
+                        pendingRequest == PowerRequest.Shutdown
+                            ? "SHUTDOWN REQUESTED" : "RESTART REQUESTED",
+                        RequestedColor);
+            }
             else
             {
                 SetPill(powerStatus, "SYSTEM OPERATIONAL", OperationalColor);
@@ -637,8 +761,10 @@ namespace DDR4_TestingApp
             SetBoolPill(activeStatus, "ACTIVE", info.BeamActive);
             SetBoolPill(possibleStatus, "POSSIBLE", info.BeamPossible);
 
-            // InfoRsp has no clamp field yet; held false until the server reports it.
-            SetBoolPill(clampStatus, "CLAMP", false);
+            // Unlike every other pill here, this reflects an OUTPUT the server drives
+            // rather than a line it senses, so it reads back whatever was last
+            // commanded on the ZCU side.
+            SetBoolPill(clampStatus, "CLAMP", info.ClampRequest);
 
             SetBoolPill(sdram0, "SDRAM 0", info.Sdram0);
             SetBoolPill(sdram1, "SDRAM 1", info.Sdram1);

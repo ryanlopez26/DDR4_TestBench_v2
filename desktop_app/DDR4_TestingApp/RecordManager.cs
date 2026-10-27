@@ -150,7 +150,7 @@ namespace DDR4_TestingApp
                     return;
                 }
 
-                await TcpManager.QueueTaskAsync(type, rid.Value, ct);
+                await TcpManager.QueueTaskAsync(type, rid.Value, false, 0, 0, ct);
 
                 pendingRids.Add(rid.Value);
                 lastSignature = "";              // force the tree to redraw with the new entry

@@ -33,11 +33,6 @@
             label1 = new Label();
             groupBox18 = new GroupBox();
             runBrowser = new TreeView();
-            groupBox19 = new GroupBox();
-            groupBox9 = new GroupBox();
-            createdTimestamp = new TextBox();
-            groupBox10 = new GroupBox();
-            modifiedTimestamp = new TextBox();
             groupBox13 = new GroupBox();
             groupBox17 = new GroupBox();
             lastUpdated = new TextBox();
@@ -53,6 +48,11 @@
             runNumber = new Label();
             groupBox21 = new GroupBox();
             runNumberEditor = new NumericUpDown();
+            groupBox19 = new GroupBox();
+            groupBox9 = new GroupBox();
+            createdTimestamp = new TextBox();
+            groupBox10 = new GroupBox();
+            modifiedTimestamp = new TextBox();
             groupBox27 = new GroupBox();
             label7 = new Label();
             runFluence = new TextBox();
@@ -60,11 +60,7 @@
             primaryLock = new Button();
             prelimaryLock = new Button();
             dynamicBox = new GroupBox();
-            treeView1 = new TreeView();
-            groupBox23 = new GroupBox();
-            primaryVerify = new Button();
-            groupBox14 = new GroupBox();
-            primaryWrite = new Button();
+            primaryRecords = new TreeView();
             groupBox22 = new GroupBox();
             groupBox29 = new GroupBox();
             expectedStage = new TextBox();
@@ -104,6 +100,7 @@
             runLET = new TextBox();
             groupBox8 = new GroupBox();
             runDescription = new RichTextBox();
+            pruneRecords = new Button();
             ((System.ComponentModel.ISupportInitialize)splitContainer1).BeginInit();
             splitContainer1.Panel1.SuspendLayout();
             splitContainer1.Panel2.SuspendLayout();
@@ -113,9 +110,6 @@
             splitContainer2.Panel2.SuspendLayout();
             splitContainer2.SuspendLayout();
             groupBox18.SuspendLayout();
-            groupBox19.SuspendLayout();
-            groupBox9.SuspendLayout();
-            groupBox10.SuspendLayout();
             groupBox13.SuspendLayout();
             groupBox17.SuspendLayout();
             groupBox16.SuspendLayout();
@@ -126,10 +120,11 @@
             splitContainer3.SuspendLayout();
             groupBox21.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)runNumberEditor).BeginInit();
+            groupBox19.SuspendLayout();
+            groupBox9.SuspendLayout();
+            groupBox10.SuspendLayout();
             groupBox27.SuspendLayout();
             dynamicBox.SuspendLayout();
-            groupBox23.SuspendLayout();
-            groupBox14.SuspendLayout();
             groupBox22.SuspendLayout();
             groupBox29.SuspendLayout();
             groupBox26.SuspendLayout();
@@ -211,53 +206,6 @@
             runBrowser.Name = "runBrowser";
             runBrowser.Size = new Size(547, 628);
             runBrowser.TabIndex = 1;
-            // 
-            // groupBox19
-            // 
-            groupBox19.Controls.Add(groupBox9);
-            groupBox19.Controls.Add(groupBox10);
-            groupBox19.Location = new Point(11, 322);
-            groupBox19.Name = "groupBox19";
-            groupBox19.Size = new Size(368, 80);
-            groupBox19.TabIndex = 10;
-            groupBox19.TabStop = false;
-            groupBox19.Text = "Timestamps";
-            // 
-            // groupBox9
-            // 
-            groupBox9.Controls.Add(createdTimestamp);
-            groupBox9.Location = new Point(6, 17);
-            groupBox9.Name = "groupBox9";
-            groupBox9.Size = new Size(151, 57);
-            groupBox9.TabIndex = 8;
-            groupBox9.TabStop = false;
-            groupBox9.Text = "Created ";
-            // 
-            // createdTimestamp
-            // 
-            createdTimestamp.Location = new Point(6, 22);
-            createdTimestamp.Name = "createdTimestamp";
-            createdTimestamp.ReadOnly = true;
-            createdTimestamp.Size = new Size(139, 23);
-            createdTimestamp.TabIndex = 5;
-            // 
-            // groupBox10
-            // 
-            groupBox10.Controls.Add(modifiedTimestamp);
-            groupBox10.Location = new Point(163, 17);
-            groupBox10.Name = "groupBox10";
-            groupBox10.Size = new Size(189, 57);
-            groupBox10.TabIndex = 9;
-            groupBox10.TabStop = false;
-            groupBox10.Text = "Modified";
-            // 
-            // modifiedTimestamp
-            // 
-            modifiedTimestamp.Location = new Point(6, 22);
-            modifiedTimestamp.Name = "modifiedTimestamp";
-            modifiedTimestamp.ReadOnly = true;
-            modifiedTimestamp.Size = new Size(175, 23);
-            modifiedTimestamp.TabIndex = 5;
             // 
             // groupBox13
             // 
@@ -346,6 +294,7 @@
             // splitContainer3.Panel1
             // 
             splitContainer3.Panel1.BackColor = Color.FromArgb(255, 128, 128);
+            splitContainer3.Panel1.Controls.Add(pruneRecords);
             splitContainer3.Panel1.Controls.Add(syncStatus);
             splitContainer3.Panel1.Controls.Add(submitRun);
             splitContainer3.Panel1.Controls.Add(deleteRun);
@@ -360,8 +309,6 @@
             splitContainer3.Panel2.Controls.Add(primaryLock);
             splitContainer3.Panel2.Controls.Add(prelimaryLock);
             splitContainer3.Panel2.Controls.Add(dynamicBox);
-            splitContainer3.Panel2.Controls.Add(groupBox23);
-            splitContainer3.Panel2.Controls.Add(groupBox14);
             splitContainer3.Panel2.Controls.Add(groupBox22);
             splitContainer3.Panel2.Controls.Add(postBox);
             splitContainer3.Panel2.Controls.Add(preliminaryBox);
@@ -375,7 +322,7 @@
             // 
             syncStatus.BackColor = Color.FromArgb(128, 255, 128);
             syncStatus.Enabled = false;
-            syncStatus.Location = new Point(289, 3);
+            syncStatus.Location = new Point(161, 3);
             syncStatus.Name = "syncStatus";
             syncStatus.Size = new Size(122, 37);
             syncStatus.TabIndex = 4;
@@ -426,6 +373,53 @@
             runNumberEditor.Name = "runNumberEditor";
             runNumberEditor.Size = new Size(77, 23);
             runNumberEditor.TabIndex = 3;
+            // 
+            // groupBox19
+            // 
+            groupBox19.Controls.Add(groupBox9);
+            groupBox19.Controls.Add(groupBox10);
+            groupBox19.Location = new Point(11, 322);
+            groupBox19.Name = "groupBox19";
+            groupBox19.Size = new Size(368, 80);
+            groupBox19.TabIndex = 10;
+            groupBox19.TabStop = false;
+            groupBox19.Text = "Timestamps";
+            // 
+            // groupBox9
+            // 
+            groupBox9.Controls.Add(createdTimestamp);
+            groupBox9.Location = new Point(6, 17);
+            groupBox9.Name = "groupBox9";
+            groupBox9.Size = new Size(151, 57);
+            groupBox9.TabIndex = 8;
+            groupBox9.TabStop = false;
+            groupBox9.Text = "Created ";
+            // 
+            // createdTimestamp
+            // 
+            createdTimestamp.Location = new Point(6, 22);
+            createdTimestamp.Name = "createdTimestamp";
+            createdTimestamp.ReadOnly = true;
+            createdTimestamp.Size = new Size(139, 23);
+            createdTimestamp.TabIndex = 5;
+            // 
+            // groupBox10
+            // 
+            groupBox10.Controls.Add(modifiedTimestamp);
+            groupBox10.Location = new Point(163, 17);
+            groupBox10.Name = "groupBox10";
+            groupBox10.Size = new Size(189, 57);
+            groupBox10.TabIndex = 9;
+            groupBox10.TabStop = false;
+            groupBox10.Text = "Modified";
+            // 
+            // modifiedTimestamp
+            // 
+            modifiedTimestamp.Location = new Point(6, 22);
+            modifiedTimestamp.Name = "modifiedTimestamp";
+            modifiedTimestamp.ReadOnly = true;
+            modifiedTimestamp.Size = new Size(175, 23);
+            modifiedTimestamp.TabIndex = 5;
             // 
             // groupBox27
             // 
@@ -492,60 +486,20 @@
             // 
             // dynamicBox
             // 
-            dynamicBox.Controls.Add(treeView1);
-            dynamicBox.Location = new Point(227, 560);
+            dynamicBox.Controls.Add(primaryRecords);
+            dynamicBox.Location = new Point(227, 408);
             dynamicBox.Name = "dynamicBox";
-            dynamicBox.Size = new Size(200, 154);
+            dynamicBox.Size = new Size(200, 306);
             dynamicBox.TabIndex = 14;
             dynamicBox.TabStop = false;
-            dynamicBox.Text = "Primary Dynamic";
+            dynamicBox.Text = "Primary Records";
             // 
-            // treeView1
+            // primaryRecords
             // 
-            treeView1.Location = new Point(6, 22);
-            treeView1.Name = "treeView1";
-            treeView1.Size = new Size(190, 126);
-            treeView1.TabIndex = 3;
-            // 
-            // groupBox23
-            // 
-            groupBox23.Controls.Add(primaryVerify);
-            groupBox23.Location = new Point(227, 485);
-            groupBox23.Name = "groupBox23";
-            groupBox23.Size = new Size(200, 69);
-            groupBox23.TabIndex = 13;
-            groupBox23.TabStop = false;
-            groupBox23.Text = "Primary Verify";
-            // 
-            // primaryVerify
-            // 
-            primaryVerify.BackColor = Color.FromArgb(128, 255, 128);
-            primaryVerify.Location = new Point(8, 22);
-            primaryVerify.Name = "primaryVerify";
-            primaryVerify.Size = new Size(186, 37);
-            primaryVerify.TabIndex = 0;
-            primaryVerify.Text = "Performed";
-            primaryVerify.UseVisualStyleBackColor = false;
-            // 
-            // groupBox14
-            // 
-            groupBox14.Controls.Add(primaryWrite);
-            groupBox14.Location = new Point(227, 408);
-            groupBox14.Name = "groupBox14";
-            groupBox14.Size = new Size(200, 71);
-            groupBox14.TabIndex = 12;
-            groupBox14.TabStop = false;
-            groupBox14.Text = "Primary Write";
-            // 
-            // primaryWrite
-            // 
-            primaryWrite.BackColor = Color.FromArgb(255, 128, 128);
-            primaryWrite.Location = new Point(8, 22);
-            primaryWrite.Name = "primaryWrite";
-            primaryWrite.Size = new Size(186, 39);
-            primaryWrite.TabIndex = 0;
-            primaryWrite.Text = "Not Performed";
-            primaryWrite.UseVisualStyleBackColor = false;
+            primaryRecords.Location = new Point(6, 22);
+            primaryRecords.Name = "primaryRecords";
+            primaryRecords.Size = new Size(190, 278);
+            primaryRecords.TabIndex = 3;
             // 
             // groupBox22
             // 
@@ -908,6 +862,16 @@
             runDescription.TabIndex = 0;
             runDescription.Text = "";
             // 
+            // pruneRecords
+            // 
+            pruneRecords.BackColor = Color.FromArgb(255, 224, 192);
+            pruneRecords.Location = new Point(289, 3);
+            pruneRecords.Name = "pruneRecords";
+            pruneRecords.Size = new Size(122, 37);
+            pruneRecords.TabIndex = 5;
+            pruneRecords.Text = "Prune Records";
+            pruneRecords.UseVisualStyleBackColor = false;
+            // 
             // RunEditor
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
@@ -927,11 +891,6 @@
             ((System.ComponentModel.ISupportInitialize)splitContainer2).EndInit();
             splitContainer2.ResumeLayout(false);
             groupBox18.ResumeLayout(false);
-            groupBox19.ResumeLayout(false);
-            groupBox9.ResumeLayout(false);
-            groupBox9.PerformLayout();
-            groupBox10.ResumeLayout(false);
-            groupBox10.PerformLayout();
             groupBox13.ResumeLayout(false);
             groupBox17.ResumeLayout(false);
             groupBox17.PerformLayout();
@@ -945,11 +904,14 @@
             splitContainer3.ResumeLayout(false);
             groupBox21.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)runNumberEditor).EndInit();
+            groupBox19.ResumeLayout(false);
+            groupBox9.ResumeLayout(false);
+            groupBox9.PerformLayout();
+            groupBox10.ResumeLayout(false);
+            groupBox10.PerformLayout();
             groupBox27.ResumeLayout(false);
             groupBox27.PerformLayout();
             dynamicBox.ResumeLayout(false);
-            groupBox23.ResumeLayout(false);
-            groupBox14.ResumeLayout(false);
             groupBox22.ResumeLayout(false);
             groupBox29.ResumeLayout(false);
             groupBox29.PerformLayout();
@@ -1032,10 +994,6 @@
         private GroupBox groupBox22;
         private GroupBox postBox;
         private GroupBox dynamicBox;
-        private GroupBox groupBox23;
-        private Button primaryVerify;
-        private GroupBox groupBox14;
-        private Button primaryWrite;
         private Button requestOperation;
         private GroupBox groupBox26;
         private ComboBox runOperation;
@@ -1055,6 +1013,7 @@
         private TextBox runFluence;
         private GroupBox groupBox29;
         private TextBox expectedStage;
-        private TreeView treeView1;
+        private TreeView primaryRecords;
+        private Button pruneRecords;
     }
 }

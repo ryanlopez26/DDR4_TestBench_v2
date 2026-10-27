@@ -90,6 +90,9 @@
             sdram2 = new Button();
             sdram1 = new Button();
             sdram0 = new Button();
+            groupBox20 = new GroupBox();
+            requestReboot = new Button();
+            requestOff = new Button();
             groupBox1.SuspendLayout();
             groupBox17.SuspendLayout();
             groupBox4.SuspendLayout();
@@ -115,6 +118,7 @@
             groupBox11.SuspendLayout();
             groupBox18.SuspendLayout();
             groupBox19.SuspendLayout();
+            groupBox20.SuspendLayout();
             SuspendLayout();
             // 
             // groupBox1
@@ -654,7 +658,7 @@
             groupBox18.Controls.Add(possibleStatus);
             groupBox18.Location = new Point(820, 132);
             groupBox18.Name = "groupBox18";
-            groupBox18.Size = new Size(109, 164);
+            groupBox18.Size = new Size(115, 164);
             groupBox18.TabIndex = 20;
             groupBox18.TabStop = false;
             groupBox18.Text = "IO Status";
@@ -742,11 +746,41 @@
             sdram0.Text = "SDRAM 0";
             sdram0.UseVisualStyleBackColor = true;
             // 
+            // groupBox20
+            // 
+            groupBox20.Controls.Add(requestOff);
+            groupBox20.Controls.Add(requestReboot);
+            groupBox20.Location = new Point(869, 12);
+            groupBox20.Name = "groupBox20";
+            groupBox20.Size = new Size(66, 114);
+            groupBox20.TabIndex = 19;
+            groupBox20.TabStop = false;
+            groupBox20.Text = "PWR";
+            // 
+            // requestReboot
+            // 
+            requestReboot.Location = new Point(6, 22);
+            requestReboot.Name = "requestReboot";
+            requestReboot.Size = new Size(54, 35);
+            requestReboot.TabIndex = 18;
+            requestReboot.Text = "Reboot";
+            requestReboot.UseVisualStyleBackColor = false;
+            // 
+            // requestOff
+            // 
+            requestOff.Location = new Point(6, 63);
+            requestOff.Name = "requestOff";
+            requestOff.Size = new Size(54, 35);
+            requestOff.TabIndex = 19;
+            requestOff.Text = "Off";
+            requestOff.UseVisualStyleBackColor = false;
+            // 
             // Launcher
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(947, 512);
+            Controls.Add(groupBox20);
             Controls.Add(groupBox19);
             Controls.Add(groupBox18);
             Controls.Add(groupBox10);
@@ -789,6 +823,7 @@
             groupBox11.ResumeLayout(false);
             groupBox18.ResumeLayout(false);
             groupBox19.ResumeLayout(false);
+            groupBox20.ResumeLayout(false);
             ResumeLayout(false);
         }
 
@@ -855,5 +890,8 @@
         private Button sdram2;
         private Button sdram1;
         private Button sdram0;
+        private GroupBox groupBox20;
+        private Button requestOff;
+        private Button requestReboot;
     }
 }

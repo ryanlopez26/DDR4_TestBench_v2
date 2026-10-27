@@ -4,7 +4,7 @@
 <!-- Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.                   -->
 <!-- Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.   -->
 
-<Project Product="Vivado" Version="7" Minor="71" Path="C:/GitHub/DDR4_TestBench/Vivado/DDR4_Tester.xpr">
+<Project Product="Vivado" Version="7" Minor="71" Path="C:/GitHub/DDR4_TestBench_v2/Vivado/DDR4_Tester.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
     <Option Name="Id" Val="1d871347700f412b9f60a988c53db661"/>

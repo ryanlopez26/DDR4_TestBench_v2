@@ -1,7 +1,7 @@
 {
   "design": {
     "design_info": {
-      "boundary_crc": "0xCACA78AA7F69DEA2",
+      "boundary_crc": "0x9570076A12ACD538",
       "device": "xczu7ev-ffvc1156-2-e",
       "gen_directory": "../../../../DDR4_Tester.gen/sources_1/bd/System",
       "name": "System",
@@ -61,7 +61,7 @@
             "value_src": "user_prop"
           },
           "DATA_WIDTH": {
-            "value": "16",
+            "value": "32",
             "value_src": "user_prop"
           },
           "MEMORY_PART": {
@@ -135,25 +135,25 @@
           "DM_N": {
             "physical_name": "ddr4_sdram_0_dm_n",
             "direction": "IO",
-            "left": "1",
+            "left": "3",
             "right": "0"
           },
           "DQ": {
             "physical_name": "ddr4_sdram_0_dq",
             "direction": "IO",
-            "left": "15",
+            "left": "31",
             "right": "0"
           },
           "DQS_C": {
             "physical_name": "ddr4_sdram_0_dqs_c",
             "direction": "IO",
-            "left": "1",
+            "left": "3",
             "right": "0"
           },
           "DQS_T": {
             "physical_name": "ddr4_sdram_0_dqs_t",
             "direction": "IO",
-            "left": "1",
+            "left": "3",
             "right": "0"
           },
           "ODT": {
@@ -3283,7 +3283,7 @@
             "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
             "parameters": {
               "MAX_BURST_LENGTH": {
-                "value": "256"
+                "value": "128"
               },
               "NUM_READ_OUTSTANDING": {
                 "value": "8"
@@ -3399,7 +3399,7 @@
             "value": "None"
           },
           "C0.DDR4_AxiAddressWidth": {
-            "value": "30"
+            "value": "31"
           },
           "C0.DDR4_AxiIDWidth": {
             "value": "1"
@@ -3411,7 +3411,7 @@
             "value": "11"
           },
           "C0.DDR4_DataWidth": {
-            "value": "16"
+            "value": "32"
           },
           "C0.DDR4_InputClockPeriod": {
             "value": "3333"
@@ -3463,8 +3463,8 @@
               "address_blocks": {
                 "C0_DDR4_ADDRESS_BLOCK": {
                   "base_address": "0",
-                  "range": "1G",
-                  "width": "30",
+                  "range": "2G",
+                  "width": "31",
                   "usage": "memory",
                   "offset_base_param": "C0_DDR4_MEMORY_MAP_BASEADDR",
                   "offset_high_param": "C0_DDR4_MEMORY_MAP_HIGHADDR"
@@ -3562,7 +3562,7 @@
         "vlnv": "xilinx.com:inline_hdl:ilconstant:1.0",
         "parameters": {
           "CONST_VAL": {
-            "value": "0b0001"
+            "value": "0b0011"
           },
           "CONST_WIDTH": {
             "value": "4"

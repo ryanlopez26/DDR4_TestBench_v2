@@ -23,21 +23,6 @@ namespace DDR4_TestingApp
         private enum Stage { Preliminary, Primary, Post }
         private enum StageState { Open, Pending, Locked }
 
-        /// <summary>
-        /// State of a single-slot primary link (priwrite / priverify). The slot counts
-        /// as taken while it points at a record that exists or is on its way; it frees
-        /// up only when that record is deleted, which is what makes "can't redo primary
-        /// write unless the record is deleted" fall out of the data rather than needing
-        /// a separate flag.
-        /// </summary>
-        private enum SlotState
-        {
-            Empty,       // no rid stored
-            Queued,      // rid issued this session, task hasn't finished yet
-            Performed,   // rid resolves to an archived record
-            Dangling,    // rid stored but no such record — deleted from the viewer
-        }
-
         private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
 
         // ====================== State ======================
@@ -61,10 +46,12 @@ namespace DDR4_TestingApp
         private Dictionary<ushort, RecordSummary> recordIndex = new();
 
         /// <summary>
-        /// Record ids issued by GENRECORD this session. The server's generator only
-        /// excludes ids already in the archive, and a record isn't archived until it
-        /// completes — so without this, two requests in a row can collide and the
-        /// second record overwrites the first.
+        /// Record ids issued by GENRECORD this session. Two purposes. The server's
+        /// generator only excludes ids already in the archive, and a record isn't
+        /// archived until it completes, so without this two requests in a row can
+        /// collide and the second record overwrites the first. It also tells a queued
+        /// record apart from a deleted one, which is what stops Prune from cutting the
+        /// link to a task that is still running.
         /// </summary>
         private readonly HashSet<ushort> issuedRids = new();
 
@@ -72,6 +59,7 @@ namespace DDR4_TestingApp
         private CancellationTokenSource? pollCts;
         private readonly CancellationTokenSource formClosing = new();
         private string lastBrowserSignature = "";
+        private RunSummary[] cachedRuns = Array.Empty<RunSummary>();
 
         private static readonly Color OpenColor = Color.FromArgb(0x27, 0xAE, 0x60);
         private static readonly Color PendingColor = Color.FromArgb(0xD6, 0xB0, 0x00);
@@ -117,33 +105,25 @@ namespace DDR4_TestingApp
 
             foreach (var box in new[] { createdTimestamp, modifiedTimestamp, lastUpdated, expectedStage })
             {
-                // Enabled = true + ReadOnly so the text renders legibly; a disabled
-                // TextBox greys its content.
+                // Enabled + ReadOnly so the text renders legibly; a disabled TextBox
+                // greys its content.
                 box.Enabled = true;
                 box.ReadOnly = true;
                 box.TabStop = false;
             }
 
-            foreach (var pill in new[] { prelimaryLock, primaryLock, postLock, syncStatus,
-                                         primaryWrite, primaryVerify })
+            foreach (var pill in new[] { prelimaryLock, primaryLock, postLock, syncStatus })
             {
-                // A disabled Button ignores BackColor under the default FlatStyle — the
-                // themed renderer paints system colours instead.
+                // A disabled Button under the default FlatStyle is painted by the themed
+                // renderer, which ignores BackColor entirely.
                 pill.FlatStyle = FlatStyle.Flat;
                 pill.FlatAppearance.BorderSize = 0;
                 pill.ForeColor = Color.White;
+                pill.Enabled = false;
+                pill.TabStop = false;
             }
 
-            prelimaryLock.Enabled = false;
-            primaryLock.Enabled = false;
-            postLock.Enabled = false;
-            syncStatus.Enabled = false;
-            prelimaryLock.TabStop = false;
-            primaryLock.TabStop = false;
-            postLock.TabStop = false;
-            syncStatus.TabStop = false;
-
-            foreach (var tree in new[] { runBrowser, preliminaryRecords, postRecords, treeView1 })
+            foreach (var tree in new[] { runBrowser, preliminaryRecords, primaryRecords, postRecords })
             {
                 tree.Scrollable = true;       // default, set explicitly
                 tree.HideSelection = false;
@@ -162,7 +142,12 @@ namespace DDR4_TestingApp
 
             runStage.Items.AddRange(new object[] { "PRELIMINARY", "PRIMARY", "POST-RUN" });
             runStage.SelectedIndex = 0;
-            RefreshOperationChoices();
+
+            // Every operation is legal in every stage now: a stage is just a list of
+            // record ids, with no per-type slots to fill. The combo is therefore fixed
+            // and no longer rebuilt when the stage changes.
+            runOperation.Items.AddRange(new object[] { "WRITE", "VERIFY", "READ", "DYNAMIC" });
+            runOperation.SelectedIndex = 0;
         }
 
         private void WireEvents()
@@ -181,19 +166,17 @@ namespace DDR4_TestingApp
             groupBy.SelectedIndexChanged += BrowserOption_Changed;
             invertSort.CheckedChanged += BrowserOption_Changed;
 
-            runStage.SelectedIndexChanged += RunStage_Changed;
+            runStage.SelectedIndexChanged += (s, e) => RefreshRequestEnabled();
             runOperation.SelectedIndexChanged += (s, e) => RefreshRequestEnabled();
             requestOperation.Click += RequestOperation_Click;
 
             submitRun.Click += SubmitRun_Click;
             deleteRun.Click += DeleteRun_Click;
-
-            primaryWrite.Click += (s, e) => OpenPrimary(workingRun.Priwrite);
-            primaryVerify.Click += (s, e) => OpenPrimary(workingRun.Priverify);
+            pruneRecords.Click += PruneRecords_Click;
 
             preliminaryRecords.NodeMouseDoubleClick += RecordTree_DoubleClick;
+            primaryRecords.NodeMouseDoubleClick += RecordTree_DoubleClick;
             postRecords.NodeMouseDoubleClick += RecordTree_DoubleClick;
-            treeView1.NodeMouseDoubleClick += RecordTree_DoubleClick;
         }
 
         private void OnConnectionStatusChanged(TcpManager.ConnectionStatus status)
@@ -234,7 +217,7 @@ namespace DDR4_TestingApp
                 if (run == null)
                 {
                     ReportError(new InvalidOperationException(
-                        $"the server no longer has run {id:X4} — the browser list is stale"));
+                        $"the server no longer has run {id} — the browser list is stale"));
                     return;
                 }
 
@@ -263,7 +246,7 @@ namespace DDR4_TestingApp
             {
                 runNumber.Text = loadedRunId.HasValue
                     ? $"Run #{loadedRunId.Value}"
-                    : "Create a New Run";
+                    : "New Run";
 
                 runNumberEditor.Value = Math.Min(workingRun.Id, ushort.MaxValue);
                 runSODIMM.Text = workingRun.SodimmId;
@@ -337,26 +320,20 @@ namespace DDR4_TestingApp
 
         // ====================== Stage logic ======================
 
-        private int PreliminaryCount =>
-            workingRun.Preverify.Count + workingRun.Prewrite.Count;
-
-        private int PrimaryCount =>
-            (workingRun.Priwrite.HasValue ? 1 : 0)
-            + (workingRun.Priverify.HasValue ? 1 : 0)
-            + (workingRun.Pridynamic?.Count ?? 0);
-
-        private int PostCount =>
-            workingRun.Postverify.Count + workingRun.Postwrite.Count;
-
-        private int DynamicCount => workingRun.Pridynamic?.Count ?? 0;
+        private List<ushort> StageList(Stage s) => s switch
+        {
+            Stage.Preliminary => workingRun.PreliminaryRecords,
+            Stage.Primary => workingRun.PrimaryRecords,
+            _ => workingRun.PostRecords,
+        };
 
         /// <summary>
         /// The stage currently being worked: the latest stage holding at least one
         /// record, or Preliminary when the run is empty.
         /// </summary>
         private Stage CurrentStage =>
-            PostCount > 0 ? Stage.Post
-          : PrimaryCount > 0 ? Stage.Primary
+            workingRun.PostRecords.Count > 0 ? Stage.Post
+          : workingRun.PrimaryRecords.Count > 0 ? Stage.Primary
           : Stage.Preliminary;
 
         /// <summary>
@@ -369,8 +346,9 @@ namespace DDR4_TestingApp
         {
             bool laterHasEntries = s switch
             {
-                Stage.Preliminary => PrimaryCount > 0 || PostCount > 0,
-                Stage.Primary => PostCount > 0,
+                Stage.Preliminary => workingRun.PrimaryRecords.Count > 0
+                                  || workingRun.PostRecords.Count > 0,
+                Stage.Primary => workingRun.PostRecords.Count > 0,
                 _ => false,
             };
             if (laterHasEntries) return StageState.Locked;
@@ -385,13 +363,11 @@ namespace DDR4_TestingApp
 
             expectedStage.Text = StageName(CurrentStage);
 
-            // Record counts on the group headers.
-            preliminaryBox.Text = $"Preliminary Records ({PreliminaryCount})";
-            dynamicBox.Text = $"Primary Dynamic ({DynamicCount})";
-            postBox.Text = $"Post-run Records ({PostCount})";
-
-            ApplyPrimaryButton(primaryWrite, workingRun.Priwrite);
-            ApplyPrimaryButton(primaryVerify, workingRun.Priverify);
+            // Record counts on the group headers. dynamicBox is the "Primary Records"
+            // group despite the name the designer still uses for it.
+            preliminaryBox.Text = $"Preliminary Records ({workingRun.PreliminaryRecords.Count})";
+            dynamicBox.Text = $"Primary Records ({workingRun.PrimaryRecords.Count})";
+            postBox.Text = $"Post-run Records ({workingRun.PostRecords.Count})";
 
             RefreshRequestEnabled();
         }
@@ -408,43 +384,6 @@ namespace DDR4_TestingApp
             if (pill.BackColor != back) pill.BackColor = back;
         }
 
-        /// <summary>
-        /// Resolve a stored primary rid against the archive. A rid this editor issued
-        /// but hasn't seen archived yet is Queued; one it did not issue and cannot find
-        /// has been deleted, which frees the slot for another request.
-        /// </summary>
-        private SlotState PrimarySlot(ushort? rid)
-        {
-            if (!rid.HasValue) return SlotState.Empty;
-            if (recordIndex.ContainsKey(rid.Value)) return SlotState.Performed;
-            if (issuedRids.Contains(rid.Value)) return SlotState.Queued;
-            return SlotState.Dangling;
-        }
-
-        /// <summary>
-        /// Primary write/verify are single-slot Options. Only Performed is clickable —
-        /// the other three states have no record to open.
-        /// </summary>
-        private void ApplyPrimaryButton(Button button, ushort? rid)
-        {
-            SlotState slot = PrimarySlot(rid);
-
-            (string text, Color back, bool clickable) = slot switch
-            {
-                SlotState.Performed => ($"Performed ({rid!.Value:X4})", OpenColor, true),
-                SlotState.Queued => ($"Queued ({rid!.Value:X4})", NeutralColor, false),
-                SlotState.Dangling => ($"Deleted ({rid!.Value:X4})", PendingColor, false),
-                _ => ("Not Performed", LockedColor, false),
-            };
-
-            if (button.Text != text) button.Text = text;
-            if (button.BackColor != back) button.BackColor = back;
-            button.Enabled = clickable;
-            button.TabStop = clickable;
-
-            button.FlatAppearance.BorderSize = slot == SlotState.Dangling ? 1 : 0;
-        }
-
         private static string StageName(Stage s) => s switch
         {
             Stage.Preliminary => "PRELIMINARY",
@@ -459,31 +398,6 @@ namespace DDR4_TestingApp
             _ => Stage.Preliminary,
         };
 
-        private void RunStage_Changed(object? sender, EventArgs e)
-        {
-            RefreshOperationChoices();
-            RefreshRequestEnabled();
-        }
-
-        /// <summary>
-        /// Dynamic is only meaningful in the primary stage; the Run struct has no
-        /// dynamic list anywhere else. Read is filed under the verify vectors.
-        /// </summary>
-        private void RefreshOperationChoices()
-        {
-            string? previous = runOperation.SelectedItem?.ToString();
-
-            runOperation.Items.Clear();
-            runOperation.Items.AddRange(new object[] { "WRITE", "VERIFY", "READ" });
-            if (SelectedStage() == Stage.Primary) runOperation.Items.Add("DYNAMIC");
-
-            int i = previous == null ? -1 : runOperation.Items.IndexOf(previous);
-            runOperation.SelectedIndex = i >= 0 ? i : 0;
-        }
-
-        /// <summary>
-        /// Operation chosen in the combo, or Write if nothing is selected.
-        /// </summary>
         private RecordType SelectedOperation() => runOperation.SelectedItem?.ToString() switch
         {
             "VERIFY" => RecordType.Verify,
@@ -493,8 +407,9 @@ namespace DDR4_TestingApp
         };
 
         /// <summary>
-        /// Why the current stage/operation pair can't be requested, or null if it can.
-        /// Used both to gate the button and to explain a click that slips through.
+        /// Why the current stage can't be requested into, or null if it can. Only the
+        /// link and the stage order constrain this now — any record type may be
+        /// attached to any stage.
         /// </summary>
         private string? RequestBlockedReason()
         {
@@ -505,26 +420,6 @@ namespace DDR4_TestingApp
             if (StateOf(stage) == StageState.Locked)
                 return $"The {StageName(stage)} stage is locked: a later stage already has "
                      + "records, and the run order can't be walked backwards.";
-
-            // Primary write and verify hold exactly one rid each. Once taken, the only
-            // way to free the slot is to delete that record in the record viewer.
-            RecordType op = SelectedOperation();
-            if (stage == Stage.Primary && op != RecordType.Dynamic)
-            {
-                ushort? rid = op == RecordType.Write ? workingRun.Priwrite : workingRun.Priverify;
-                string name = op == RecordType.Write ? "write" : "verify";
-
-                switch (PrimarySlot(rid))
-                {
-                    case SlotState.Performed:
-                        return $"Primary {name} has already been performed as record "
-                             + $"{rid!.Value:X4}. Delete that record in the record viewer "
-                             + "to free the slot.";
-                    case SlotState.Queued:
-                        return $"Primary {name} is already queued as record {rid!.Value:X4}. "
-                             + "Wait for it to finish.";
-                }
-            }
 
             return null;
         }
@@ -538,67 +433,53 @@ namespace DDR4_TestingApp
 
         private void RefreshRecordTrees()
         {
-            // Preliminary: write and verify lists (Read requests land in verify).
-            PopulateRecordTree(preliminaryRecords, new (string, IReadOnlyList<ushort>)[]
-            {
-                ("Write", workingRun.Prewrite),
-                ("Verify", workingRun.Preverify),
-            });
-
-            // Primary dynamic is a flat list — every entry is the same type.
-            PopulateRecordTree(treeView1, new (string, IReadOnlyList<ushort>)[]
-            {
-                ("", workingRun.Pridynamic ?? (IReadOnlyList<ushort>)Array.Empty<ushort>()),
-            });
-
-            PopulateRecordTree(postRecords, new (string, IReadOnlyList<ushort>)[]
-            {
-                ("Write", workingRun.Postwrite),
-                ("Verify", workingRun.Postverify),
-            });
+            PopulateRecordTree(preliminaryRecords, workingRun.PreliminaryRecords);
+            PopulateRecordTree(primaryRecords, workingRun.PrimaryRecords);
+            PopulateRecordTree(postRecords, workingRun.PostRecords);
         }
 
         /// <summary>
-        /// Render rid lists the way the record manager does: status colour, rid, time,
-        /// duration. A group name of "" produces a flat list instead of a parent node.
-        /// Rids with no archived record yet (still queued, or deleted out from under
-        /// the run) are shown greyed rather than hidden.
+        /// Render a stage's rid list the way the record manager does: status colour,
+        /// rid, type, time, duration. Grouped by record type, since a stage can now hold
+        /// any mix of them. Rids with no archived record are shown rather than hidden —
+        /// greyed as "queued" if this editor issued them, "missing" otherwise, which is
+        /// exactly the distinction Prune acts on.
         /// </summary>
-        private void PopulateRecordTree(TreeView tree,
-                                        (string Group, IReadOnlyList<ushort> Rids)[] groups)
+        private void PopulateRecordTree(TreeView tree, List<ushort> rids)
         {
             ushort? selected = tree.SelectedNode?.Tag as ushort?;
+            var collapsed = tree.Nodes.Cast<TreeNode>()
+                                .Where(n => !n.IsExpanded)
+                                .Select(n => n.Name)
+                                .ToHashSet();
 
             tree.BeginUpdate();
             try
             {
                 tree.Nodes.Clear();
 
-                foreach (var (group, rids) in groups)
+                foreach (RecordType type in new[] { RecordType.Write, RecordType.Verify,
+                                                    RecordType.Read, RecordType.Dynamic })
                 {
-                    if (rids.Count == 0) continue;
+                    // An unarchived rid has no known type; it is listed under Unknown.
+                    var ofType = rids.Where(r => recordIndex.TryGetValue(r, out var s)
+                                                 && s.Rtype == type).ToList();
+                    if (ofType.Count == 0) continue;
 
-                    TreeNodeCollection target;
-                    if (group.Length == 0)
-                    {
-                        target = tree.Nodes;
-                    }
-                    else
-                    {
-                        var parent = tree.Nodes.Add(group, $"{group} ({rids.Count})");
-                        target = parent.Nodes;
-                    }
-
-                    foreach (ushort rid in rids)
-                    {
-                        var node = target.Add($"rec:{rid:X4}", DescribeRecord(rid));
-                        node.Tag = rid;
-                        node.ForeColor = ColorForRecord(rid);
-                        node.ToolTipText = "Double-click to open in the record viewer.";
-                    }
+                    var parent = tree.Nodes.Add(type.ToString(),
+                                                $"{type} ({ofType.Count})");
+                    foreach (ushort rid in ofType) AddRecordNode(parent.Nodes, rid);
                 }
 
-                foreach (TreeNode n in tree.Nodes) n.Expand();
+                var unknown = rids.Where(r => !recordIndex.ContainsKey(r)).ToList();
+                if (unknown.Count > 0)
+                {
+                    var parent = tree.Nodes.Add("Unknown", $"Unknown ({unknown.Count})");
+                    foreach (ushort rid in unknown) AddRecordNode(parent.Nodes, rid);
+                }
+
+                foreach (TreeNode n in tree.Nodes)
+                    if (!collapsed.Contains(n.Name)) n.Expand();
 
                 if (selected.HasValue) RestoreRecordSelection(tree, selected.Value);
             }
@@ -608,10 +489,24 @@ namespace DDR4_TestingApp
             }
         }
 
+        private void AddRecordNode(TreeNodeCollection target, ushort rid)
+        {
+            var node = target.Add($"rec:{rid:X4}", DescribeRecord(rid));
+            node.Tag = rid;
+            node.ForeColor = ColorForRecord(rid);
+            node.ToolTipText = recordIndex.ContainsKey(rid)
+                ? "Double-click to open in the record viewer."
+                : issuedRids.Contains(rid)
+                    ? "Queued — no record is archived until the task finishes."
+                    : "No such record on the ZCU. Prune Records will drop this link.";
+        }
+
         private string DescribeRecord(ushort rid)
         {
             if (!recordIndex.TryGetValue(rid, out var r))
-                return $"{rid:X4}    queued / not archived";
+                return issuedRids.Contains(rid)
+                    ? $"{rid:X4}    queued"
+                    : $"{rid:X4}    MISSING";
 
             string status = r.Aborted ? "ABORTED" : r.Completed ? "COMPLETED" : "UNKNOWN";
             string started = r.TimeStarted == 0
@@ -619,12 +514,13 @@ namespace DDR4_TestingApp
                 : DateTimeOffset.FromUnixTimeSeconds((long)r.TimeStarted)
                                 .LocalDateTime.ToString("MM-dd HH:mm:ss");
 
-            return $"{rid:X4}    {r.Rtype}    {started}    {FormatDuration(r.TimeDuration)}    {status}";
+            return $"{rid:X4}    {started}    {FormatDuration(r.TimeDuration)}    {status}";
         }
 
         private Color ColorForRecord(ushort rid)
         {
-            if (!recordIndex.TryGetValue(rid, out var r)) return NeutralColor;
+            if (!recordIndex.TryGetValue(rid, out var r))
+                return issuedRids.Contains(rid) ? NeutralColor : LockedColor;
             return r.Aborted ? LockedColor : r.Completed ? OpenColor : NeutralColor;
         }
 
@@ -641,11 +537,6 @@ namespace DDR4_TestingApp
         private void RecordTree_DoubleClick(object? sender, TreeNodeMouseClickEventArgs e)
         {
             if (e.Node?.Tag is ushort rid) new RecordViewer(rid).Show(this);
-        }
-
-        private void OpenPrimary(ushort? rid)
-        {
-            if (rid.HasValue) new RecordViewer(rid.Value).Show(this);
         }
 
         // ====================== Requesting an operation ======================
@@ -667,7 +558,7 @@ namespace DDR4_TestingApp
             RecordType type = SelectedOperation();
 
             // The engine snapshots the server's committed config when a task STARTS, so
-            // locally edited but unsent geometry silently doesn't apply.
+            // locally edited but unsent geometry silently does not apply.
             if (Config.IsDirty &&
                 MessageBox.Show(
                     "The local configuration has not been sent to the ZCU, so this task " +
@@ -693,10 +584,18 @@ namespace DDR4_TestingApp
                     return;
                 }
 
-                await TcpManager.QueueTaskAsync(type, rid.Value, ct);
+                // A dynamic task carries three extra fields. parent_run links the record
+                // back to this run server-side; auto_reboot_on_sefi follows the config's
+                // automated SEFI setting, which is otherwise unreachable from the wire.
+                await TcpManager.QueueTaskAsync(
+                    type, rid.Value,
+                    autoRebootOnSefi: Config.AutomatedSefiMode,
+                    numberOfTrials: 1,
+                    parentRun: workingRun.Id,
+                    ct: ct);
 
                 issuedRids.Add(rid.Value);
-                AttachRecord(stage, type, rid.Value);
+                StageList(stage).Add(rid.Value);
 
                 PushRunToUi();
             }
@@ -713,53 +612,92 @@ namespace DDR4_TestingApp
             }
         }
 
-        /// <summary>Read is filed with verify; dynamic only exists in the primary stage.</summary>
-        private void AttachRecord(Stage stage, RecordType type, ushort rid)
-        {
-            bool verifyLike = type == RecordType.Verify || type == RecordType.Read;
-
-            switch (stage)
-            {
-                case Stage.Preliminary:
-                    if (verifyLike) workingRun.Preverify.Add(rid);
-                    else workingRun.Prewrite.Add(rid);
-                    break;
-
-                case Stage.Primary:
-                    if (type == RecordType.Dynamic)
-                    {
-                        workingRun.Pridynamic ??= new List<ushort>();
-                        workingRun.Pridynamic.Add(rid);
-                    }
-                    else if (verifyLike) workingRun.Priverify = rid;
-                    else workingRun.Priwrite = rid;
-                    break;
-
-                default:
-                    if (verifyLike) workingRun.Postverify.Add(rid);
-                    else workingRun.Postwrite.Add(rid);
-                    break;
-            }
-        }
-
+        /// <summary>
+        /// Ask the server for a record id, re-rolling if it hands back one already
+        /// queued or already cited by this run. GENRECORD picks at random and only
+        /// excludes ids in the archive, so a collision with an in-flight request is
+        /// entirely possible — and with submit_record upserting, the loser is silently
+        /// overwritten rather than duplicated.
+        /// </summary>
         private async Task<ushort?> AllocateRecordIdAsync(CancellationToken ct)
         {
             for (int attempt = 0; attempt < 8; attempt++)
             {
                 ushort rid = await TcpManager.NewRecordIdAsync(ct);
-                if (!issuedRids.Contains(rid) && !RunReferences(rid)) return rid;
+                if (!issuedRids.Contains(rid) && !workingRun.AllRecords.Contains(rid))
+                    return rid;
             }
             return null;
         }
 
-        private bool RunReferences(ushort rid) =>
-            workingRun.Prewrite.Contains(rid)
-            || workingRun.Preverify.Contains(rid)
-            || workingRun.Priwrite == rid
-            || workingRun.Priverify == rid
-            || (workingRun.Pridynamic?.Contains(rid) ?? false)
-            || workingRun.Postwrite.Contains(rid)
-            || workingRun.Postverify.Contains(rid);
+        // ====================== Prune ======================
+
+        /// <summary>
+        /// Drop every rid this run cites that has no record on the ZCU. Purely local:
+        /// the lists are edited in memory and the change is not persisted until Submit,
+        /// so a mistaken prune is undone by reselecting the run in the browser.
+        ///
+        /// Records queued by this editor but not yet archived are DELIBERATELY kept.
+        /// They are absent from LISTRECORDS for the same reason a deleted record is —
+        /// the archive only gains a record when its task finishes — so pruning on
+        /// absence alone would cut the link to a task that is still running.
+        /// </summary>
+        private void PruneRecords_Click(object? sender, EventArgs e)
+        {
+            var missing = workingRun.AllRecords
+                                    .Distinct()
+                                    .Where(rid => !recordIndex.ContainsKey(rid)
+                                               && !issuedRids.Contains(rid))
+                                    .OrderBy(rid => rid)
+                                    .ToList();
+
+            int queued = workingRun.AllRecords.Distinct().Count(
+                rid => !recordIndex.ContainsKey(rid) && issuedRids.Contains(rid));
+
+            if (missing.Count == 0)
+            {
+                MessageBox.Show(
+                    queued > 0
+                        ? $"Nothing to prune. {queued} record(s) are queued but not yet " +
+                          "archived; those links are kept."
+                        : "Every record this run cites exists on the ZCU.",
+                    "Prune Records", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
+            {
+                // The record index is whatever the last successful poll returned. On a
+                // dead link it is stale, and everything would look missing.
+                MessageBox.Show(
+                    "Not connected. The record list is stale, so pruning now could drop " +
+                    "links to records that do exist.",
+                    "Prune Records", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string list = string.Join(", ", missing.Take(20).Select(r => r.ToString("X4")))
+                        + (missing.Count > 20 ? $", +{missing.Count - 20} more" : "");
+
+            string queuedNote = queued > 0
+                ? $"\n\n{queued} queued record(s) are not yet archived; their links are kept."
+                : "";
+
+            if (MessageBox.Show(
+                    $"Remove {missing.Count} dead record link(s) from this run?\n\n{list}" +
+                    queuedNote +
+                    "\n\nThis only edits the run locally — press Submit Run to persist it.",
+                    "Prune Records", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+                != DialogResult.Yes)
+                return;
+
+            var dead = missing.ToHashSet();
+            workingRun.PreliminaryRecords.RemoveAll(dead.Contains);
+            workingRun.PrimaryRecords.RemoveAll(dead.Contains);
+            workingRun.PostRecords.RemoveAll(dead.Contains);
+
+            PushRunToUi();
+        }
 
         // ====================== Submit / delete ======================
 
@@ -884,29 +822,21 @@ namespace DDR4_TestingApp
 
         /// <summary>
         /// "SYNCED" means the working copy matches what the server last reported. Record
-        /// links added by Request live only in this editor until Submit, so requesting
-        /// an operation turns this red.
+        /// links added by Request, and links removed by Prune, live only in this editor
+        /// until Submit — both turn this red.
         /// </summary>
         private void RefreshSyncPill()
         {
             if (IsDisposed) return;
 
             if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
-            {
                 SetPill(syncStatus, "NOT CONNECTED", NeutralColor);
-            }
             else if (serverSignature == null)
-            {
                 SetPill(syncStatus, "NOT SUBMITTED", NeutralColor);
-            }
             else if (RunSignature(workingRun) != serverSignature)
-            {
                 SetPill(syncStatus, "UNSAVED", LockedColor);
-            }
             else
-            {
                 SetPill(syncStatus, "SYNCED", OpenColor);
-            }
 
             RefreshRequestEnabled();
         }
@@ -935,18 +865,15 @@ namespace DDR4_TestingApp
 
             // TimeModified is deliberately excluded: Submit stamps it, so including it
             // would make every saved run read dirty immediately afterwards.
-            void Ids(IEnumerable<ushort>? v)
+            void Ids(IEnumerable<ushort> v)
             {
-                if (v == null) { sb.Append("-;"); return; }
                 foreach (ushort x in v) sb.Append(x).Append(',');
                 sb.Append(';');
             }
 
-            Ids(r.Preverify); Ids(r.Prewrite);
-            sb.Append(r.Priwrite?.ToString() ?? "-").Append(';');
-            Ids(r.Pridynamic);
-            sb.Append(r.Priverify?.ToString() ?? "-").Append(';');
-            Ids(r.Postverify); Ids(r.Postwrite);
+            Ids(r.PreliminaryRecords);
+            Ids(r.PrimaryRecords);
+            Ids(r.PostRecords);
 
             return sb.ToString();
         }
@@ -959,8 +886,6 @@ namespace DDR4_TestingApp
             PopulateBrowser(cachedRuns);
         }
 
-        private RunSummary[] cachedRuns = Array.Empty<RunSummary>();
-
         private async void RunBrowser_AfterSelect(object? sender, TreeViewEventArgs e)
         {
             if (e.Node?.Tag is not RunSummary summary) return;
@@ -969,7 +894,7 @@ namespace DDR4_TestingApp
             if (serverSignature != null && RunSignature(workingRun) != serverSignature &&
                 MessageBox.Show(
                     "The current run has unsaved changes, including any record links added " +
-                    "since the last Submit. Discard them and load the selected run?",
+                    "or pruned since the last Submit. Discard them and load the selected run?",
                     "Unsaved changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
                 != DialogResult.Yes)
             {
@@ -1100,7 +1025,8 @@ namespace DDR4_TestingApp
                 recordIndex = records.GroupBy(r => r.Rid)
                                      .ToDictionary(g => g.Key, g => g.Last());
 
-                // Anything now archived is no longer an outstanding reservation.
+                // Anything now archived is no longer an outstanding reservation — and
+                // stops being treated as "queued" by Prune and the trees.
                 issuedRids.RemoveWhere(recordIndex.ContainsKey);
 
                 PopulateBrowser(runs);
@@ -1113,7 +1039,8 @@ namespace DDR4_TestingApp
             catch (OperationCanceledException) { }
             catch (Exception ex) when (IsConnectionFault(ex))
             {
-                // Leave the tree as it is — a dropped link shouldn't blank the browser.
+                // Leave the trees as they are — a dropped link shouldn't blank them, and
+                // must not make every record look missing to Prune.
                 ReportError(ex);
             }
         }

@@ -65,8 +65,8 @@
 //  0x02  VERIFY          u16 rid                     -> (nothing)
 //  0x03  READ            u16 rid                     -> (nothing)
 //  0x04  CONFIG          ConfigCmd, 34 bytes         -> 1-byte ACK
-//  0x05  DYNAMIC         u16 rid                     -> (nothing)
-//  0x06  INFO            (empty)                     -> InfoRsp, 11 bools
+//  0x05  DYNAMIC         DynamicCmd, 7 bytes         -> (nothing)
+//  0x06  INFO            (empty)                     -> InfoRsp, 12 bools
 //  0x07  GENRUN          (empty)                     -> u16 run id
 //  0x08  GENRECORD       (empty)                     -> u16 record id
 //  0x09  SAVERUN         Run                         -> bool success
@@ -83,6 +83,7 @@
 //  0x14  DELRUN          u16 id                      -> bool success
 //  0x15  DELRECORD       u16 rid                     -> bool success
 //  0x16  GETFPGAIMAGES   (empty)                     -> Vec<String> images
+//  0x17  REQUESTPOWERSTATE u8 state (0/1/2)         -> bool success
 //
 // CMD_GETCAPTURE is the one command whose reply is NOT bincode. The server
 // streams the capture file straight from disk to the socket, so the payload is
@@ -125,6 +126,14 @@ namespace DDR4_TestingApp
         Verify = 1,
         Write = 2,
         Dynamic = 3,
+    }
+
+    /// <summary>Values accepted by CMD_REQUESTPOWERSTATE / PowerManager.power_request.</summary>
+    public enum PowerRequest : byte
+    {
+        Active = 0,
+        Shutdown = 1,
+        Reboot = 2,
     }
 
     /// <summary>Values accepted by ConfigCmd.DataPattern.</summary>
@@ -272,15 +281,18 @@ namespace DDR4_TestingApp
         public double AirGap;
         public string Description = "";
 
-        public List<ushort> Preverify = new();
-        public List<ushort> Prewrite = new();
+        // One flat list per stage. This REPLACED the old seven-field layout
+        // (preverify/prewrite + the three Option-typed primary slots +
+        // postverify/postwrite), so there is no longer a single-slot primary write
+        // or verify, and no Option anywhere — a stage simply holds zero or more
+        // record ids, in the order they were attached.
+        public List<ushort> PreliminaryRecords = new();
+        public List<ushort> PrimaryRecords = new();
+        public List<ushort> PostRecords = new();
 
-        public ushort? Priwrite;
-        public List<ushort>? Pridynamic;
-        public ushort? Priverify;
-
-        public List<ushort> Postverify = new();
-        public List<ushort> Postwrite = new();
+        /// <summary>Every record id this run cites, across all three stages.</summary>
+        public IEnumerable<ushort> AllRecords =>
+            PreliminaryRecords.Concat(PrimaryRecords).Concat(PostRecords);
     }
 
     /// <summary>task_engine.rs TaskRequest — one queued, not-yet-started task.</summary>
@@ -351,6 +363,13 @@ namespace DDR4_TestingApp
 
         /// <summary>A bitstream is loaded in the PL (EMIO 83).</summary>
         public bool FpgaLoaded;
+
+        /// <summary>
+        /// State of the clamp-request OUTPUT line the server drives. Unlike every
+        /// other field here this reflects something the ZCU is asserting, not
+        /// something it is sensing, so it reads back whatever was last commanded.
+        /// </summary>
+        public bool ClampRequest;
 
         /// <summary>SDRAM select lines (EMIO 84-87).</summary>
         public bool Sdram0;
@@ -701,6 +720,7 @@ namespace DDR4_TestingApp
         private const byte CMD_DELRUN = 0x14;
         private const byte CMD_DELRECORD = 0x15;
         private const byte CMD_GETFPGAIMAGES = 0x16;
+        private const byte CMD_REQUESTPOWERSTATE = 0x17;
 
         /// <summary>Frame header: SYNC(4) + CMD(1) + LEN(4).</summary>
         private const int HeaderSize = 9;
@@ -876,16 +896,52 @@ namespace DDR4_TestingApp
         public static Task QueueReadAsync(ushort rid, CancellationToken ct = default) =>
             SendOnlyAsync(CMD_READ, EncodeU16(rid), ct);
 
-        public static Task QueueDynamicAsync(ushort rid, CancellationToken ct = default) =>
-            SendOnlyAsync(CMD_DYNAMIC, EncodeU16(rid), ct);
+        /// <summary>
+        /// Queue a dynamic task. Unlike the other three, DynamicCmd now carries more
+        /// than a rid — 7 bytes rather than 2 — so a rid alone is no longer a valid
+        /// payload and an old client silently desyncs the frame.
+        /// </summary>
+        /// <param name="autoRebootOnSefi">
+        /// Ask the engine to request a power cycle when a SEFI is detected. Something
+        /// has to be polling GETPOWERMODE and driving a contactor for that to do
+        /// anything; with no power controller attached the board just parks.
+        /// </param>
+        /// <param name="numberOfTrials">How many dynamic passes to run.</param>
+        /// <param name="parentRun">Run id this record belongs to, 0 for none.</param>
+        public static Task QueueDynamicAsync(
+            ushort rid,
+            bool autoRebootOnSefi = false,
+            ushort numberOfTrials = 1,
+            ushort parentRun = 0,
+            CancellationToken ct = default)
+        {
+            var payload = new BincodeWriter()
+                .U16(rid)
+                .Bool(autoRebootOnSefi)
+                .U16(numberOfTrials)
+                .U16(parentRun)
+                .ToArray();
 
-        public static Task QueueTaskAsync(RecordType type, ushort rid, CancellationToken ct = default) =>
+            return SendOnlyAsync(CMD_DYNAMIC, payload, ct);
+        }
+
+        /// <summary>
+        /// Queue any task type. The dynamic parameters are ignored for the other three.
+        /// </summary>
+        public static Task QueueTaskAsync(
+            RecordType type,
+            ushort rid,
+            bool autoRebootOnSefi = false,
+            ushort numberOfTrials = 1,
+            ushort parentRun = 0,
+            CancellationToken ct = default) =>
             type switch
             {
                 RecordType.Write => QueueWriteAsync(rid, ct),
                 RecordType.Verify => QueueVerifyAsync(rid, ct),
                 RecordType.Read => QueueReadAsync(rid, ct),
-                RecordType.Dynamic => QueueDynamicAsync(rid, ct),
+                RecordType.Dynamic =>
+                    QueueDynamicAsync(rid, autoRebootOnSefi, numberOfTrials, parentRun, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(type)),
             };
 
@@ -941,7 +997,7 @@ namespace DDR4_TestingApp
             TimeSpan? pollInterval = null,
             CancellationToken ct = default)
         {
-            await QueueTaskAsync(type, rid, ct).ConfigureAwait(false);
+            await QueueTaskAsync(type, rid, false, 0, 0, ct).ConfigureAwait(false);
             return await WaitForRecordAsync(rid, progress, pollInterval, ct).ConfigureAwait(false);
         }
 
@@ -1308,6 +1364,7 @@ namespace DDR4_TestingApp
                     UiClock = r.ReadBool(),
                     PlClock = r.ReadBool(),
                     FpgaLoaded = r.ReadBool(),
+                    ClampRequest = r.ReadBool(),
                     Sdram0 = r.ReadBool(),
                     Sdram1 = r.ReadBool(),
                     Sdram2 = r.ReadBool(),
@@ -1339,6 +1396,32 @@ namespace DDR4_TestingApp
                 };
                 r.ExpectEnd("GetPowerModeRsp");
                 return pm;
+            }, DefaultTimeout, ct);
+
+        /// <summary>
+        /// Ask the server to enter a power state. The server stores the request and the
+        /// task engine acts on it at the top of its loop: it unmounts /dvr, hibernates
+        /// the queue, and marks itself safe — only then does GETPOWERMODE start
+        /// reporting the request to whatever is driving the contactor.
+        ///
+        /// Two consequences worth knowing. The engine only reaches that check BETWEEN
+        /// tasks, so a request issued during a long run is not acted on until the run
+        /// finishes — `success` here means "accepted", not "acted on". And once the
+        /// server has marked itself safe it refuses every archive write and will not
+        /// start another task, so <see cref="PowerRequest.Active"/> does not undo a
+        /// request that has already been honoured; only a real power cycle clears it.
+        /// </summary>
+        public static Task<bool> SetPowerStateAsync(PowerRequest state,
+                                                    CancellationToken ct = default) =>
+            RunAsync(async t =>
+            {
+                var payload = new BincodeWriter().U8((byte)state).ToArray();
+                var p = await RequestAsync(CMD_REQUESTPOWERSTATE, payload,
+                                           CMD_REQUESTPOWERSTATE, t).ConfigureAwait(false);
+                var r = new BincodeReader(p);
+                bool ok = r.ReadBool();
+                r.ExpectEnd("RequestPowerStateRsp");
+                return ok;
             }, DefaultTimeout, ct);
 
         // ============================== Plumbing ==============================
@@ -1531,13 +1614,9 @@ namespace DDR4_TestingApp
                 .F64(r.Flux)
                 .F64(r.AirGap)
                 .Str(r.Description)
-                .VecU16(r.Preverify)
-                .VecU16(r.Prewrite)
-                .OptU16(r.Priwrite)
-                .OptVecU16(r.Pridynamic)
-                .OptU16(r.Priverify)
-                .VecU16(r.Postverify)
-                .VecU16(r.Postwrite)
+                .VecU16(r.PreliminaryRecords)
+                .VecU16(r.PrimaryRecords)
+                .VecU16(r.PostRecords)
                 .ToArray();
         }
 
@@ -1590,13 +1669,9 @@ namespace DDR4_TestingApp
             Flux = r.ReadF64(),
             AirGap = r.ReadF64(),
             Description = r.ReadString(),
-            Preverify = r.ReadVecU16().ToList(),
-            Prewrite = r.ReadVecU16().ToList(),
-            Priwrite = r.ReadOptionU16(),
-            Pridynamic = r.ReadSomeTag() ? r.ReadVecU16().ToList() : null,
-            Priverify = r.ReadOptionU16(),
-            Postverify = r.ReadVecU16().ToList(),
-            Postwrite = r.ReadVecU16().ToList(),
+            PreliminaryRecords = r.ReadVecU16().ToList(),
+            PrimaryRecords = r.ReadVecU16().ToList(),
+            PostRecords = r.ReadVecU16().ToList(),
         };
     }
 }
