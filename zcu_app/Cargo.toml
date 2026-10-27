@@ -27,6 +27,6 @@ bytemuck = { version = "1.25.2", features = ["zeroable_maybe_uninit", "derive"] 
 # keeps getting real hardware support automatically.
 [features]
 debug = []
-#default = ["hardware"]
-default = []
+default = ["hardware"]
+#default = []
 hardware = ["libc", "gpio-cdev"]

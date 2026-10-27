@@ -5,6 +5,7 @@ mod types;
 mod rand;
 mod ram;
 mod commands;
+mod mount;
 mod config;
 mod fpga;
 mod chip;
@@ -38,6 +39,9 @@ pub struct PowerManager {
 fn main() {
 
     println!("ZCU Server V3 - NSRL Edition");
+
+    //Attempt to mount the dvr
+    mount::mount_dvr();
 
     //Attempt to load configuration file
     config::load();

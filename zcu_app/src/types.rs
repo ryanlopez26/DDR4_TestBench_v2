@@ -39,6 +39,13 @@ pub struct DumpCmd {
     pub uuid: u16,
 }
 
+#[repr(C)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ClampCmd {
+    pub state: bool
+}
+
+
 
 
 #[repr(C)]
@@ -116,6 +123,10 @@ pub struct ConfigCmd {
 
     // Automated Dynamic Mode
     pub automated_sefi_mode: bool,
+
+    //Exposure
+    pub exposure_time_limit_enabled: bool,
+    pub exposure_time_limit_ms: f64
 }
 
 
@@ -184,7 +195,7 @@ pub struct GetPowerModeRsp {
 #[repr(C)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EngineStatusRsp {
-    pub active_record: Option<Record>,
+    pub current_request_type: Option<RecordType>,
     pub record_progress: f64,
     pub is_idle: bool,
     pub queue: Vec<TaskRequest>

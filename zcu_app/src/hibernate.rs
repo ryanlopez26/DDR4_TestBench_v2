@@ -30,7 +30,7 @@ pub fn save(){
     };
 
     //Write the hibernation structure to a file
-    match fs::write("hibernate.bin", bincode::serialize::<Hibernator>(&hib).unwrap()) {
+    match fs::write("/dvr/hibernate.bin", bincode::serialize::<Hibernator>(&hib).unwrap()) {
         Ok(_) => {
             println!("Hibernated task queue!");
         },
@@ -45,7 +45,7 @@ pub fn load(){
 
     //Check if there is a hibernation file
 
-    match fs::read("hibernate.bin") {
+    match fs::read("/dvr/hibernate.bin") {
 
         Ok(contents) => {
 

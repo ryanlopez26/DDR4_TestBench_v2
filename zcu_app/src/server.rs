@@ -30,8 +30,8 @@ use serde::de::DeserializeOwned;
 
 use crate::record::RecordType;
 use crate::task_engine::TaskRequest;
-use crate::types::{ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
-use crate::{THREADS, archive, config::*, task_engine};
+use crate::types::{ClampCmd, ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
+use crate::{THREADS, archive, config::*, gpio, task_engine};
 
 const MAX_PAYLOAD: u32 = 1 << 20;
 
@@ -351,6 +351,14 @@ fn handle_client(mut stream: TcpStream) {
 
                 }
                 Err(e) => eprintln!("[!] {}: invalid set power state params: {}", peer, e),
+            }, 
+            CMD_CLAMPCMD  => match parse_payload::<ClampCmd>(&payload) {
+                Ok(c) => {
+
+                    gpio::set_clamp_request(c.state).unwrap();
+
+                }
+                Err(e) => eprintln!("[!] {}: invalid clamp request params: {}", peer, e),
             }, 
             other => eprintln!("[!] {}: unknown CMD 0x{:02X}", peer, other),
         }

@@ -1,4 +1,5 @@
 use std::{path::Path, sync::RwLock, time::Instant};
+use gpio_cdev::LineDirection::In;
 use serde::{Deserialize, Serialize};
 
 use crate::{PM, archive, gpio, hibernate, record::{self, Record}, tools::{self, get_epoch}, types::ConfigCmd};
@@ -503,7 +504,7 @@ pub fn engine_main(){
 
 
                                     // Get beam signal 
-                                    let b = gpio::get_beam_signal();
+                                    let b = gpio::get_beam_active();
 
                                     // Update timers
                                     match b {
@@ -651,7 +652,7 @@ pub fn engine_main(){
                                         r.log_timestamp.push(start.elapsed().as_secs_f64());
                                         r.log_bits_incorrect.push(r.incorrect_bits);
                                         r.log_bits_correct.push(r.correct_bits);
-                                        r.log_beam_signal.push(gpio::get_beam_signal());
+                                        r.log_beam_signal.push(gpio::get_beam_active());
                                         r.log_current_address.push(blk_ind * config.block_size);
                                         r.log_err_bins.push(r.err_bins.unwrap());
                                         r.log_adj_err_bins.push(r.adj_err_bins.unwrap());
@@ -706,8 +707,90 @@ pub fn engine_main(){
 
                         }
 
-                    }
+                    },
+                    record::RecordType::Expose => {
 
+                        //Initialize timing variables
+
+                        let mut active_last_low = Instant::now();
+                        let mut active_last_high = Instant::now();
+                        let mut possible_last_low = Instant::now();
+                        let mut possible_last_high = Instant::now();
+
+                        let mut exposure_begin: Option<Instant> = None;
+
+                        //Keep looping
+                        loop {
+
+                            //Update timers
+                            if gpio::get_beam_active() {
+                                active_last_high = Instant::now();
+                            } else {
+                                active_last_low = Instant::now();
+                            }
+
+                            if gpio::get_beam_possible() {
+                                possible_last_high = Instant::now();
+                            } else {
+                                possible_last_low = Instant::now();
+                            }                      
+
+                            //Check if we need to update
+                            if last_update.elapsed() > UPDATE_FREQUENCY {
+
+                                //Reset watchdog
+                                last_update = Instant::now();             
+
+                                //Record datapoints
+                                r.log_timestamp.push(start.elapsed().as_secs_f64());
+                                r.log_beam_possible.push(gpio::get_beam_possible());
+                                r.log_beam_active.push(gpio::get_beam_active());
+                                r.log_beam_clamp.push(gpio::get_clamp_request());
+                                r.exposure_time = match exposure_begin {
+                                    Some(e) => Some(e.elapsed().as_secs_f64()),
+                                    None => None,
+                                };
+                            
+                                //Lock the status struct
+                                let mut s = STATUS.write().unwrap();
+
+                                //Update the status struct
+                                s.active_record = Some(r.clone());
+                                s.task_progress = match config.exposure_time_limit_enabled {
+                                    true => match exposure_begin {
+                                        Some(e) => e.elapsed().as_millis() as f64 / config.exposure_time_limit_ms as f64,
+                                        None => 0.0,
+                                    },
+                                    false => 0.5,
+                                };
+
+                                s.task_runtime = (get_epoch() - r.time_started) as f64;
+                                
+                                //Check if we must abort
+                                if abort_check() {
+
+                                    // Must abort right now
+                                    r.time_ended = get_epoch();
+                                    r.time_duration = r.time_ended - r.time_started;
+                                    r.aborted = true;
+
+                                    // Submit whatever we have
+                                    archive::submit_record(r.clone());
+
+                                    //Reset the FSM
+                                    continue 'main;
+                                }
+
+                            }
+
+                            //Check if we should start exposure
+                            if(active_last_high )
+
+
+
+                        }
+                    
+                    },
 
                 }
 

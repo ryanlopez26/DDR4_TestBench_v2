@@ -44,6 +44,7 @@ pub const CMD_DELRECORD: u8 = 0x15;
 
 pub const CMD_GETFPGAIMAGES: u8 = 0x16;
 pub const CMD_REQUESTPOWERSTATE: u8 = 0x17;
+pub const CMD_CLAMPCMD: u8 = 0x18;
 
 
 pub const PAGE_SIZE: usize = 1024; // Size of data pages for dump responses
@@ -64,6 +65,8 @@ pub static CONFIG: LazyLock<RwLock<ConfigCmd>> = LazyLock::new(|| {
         data_pattern: 0,
         sefi_threshold: 0.0,
         automated_sefi_mode: false,
+        exposure_time_limit_enabled: false,
+        exposure_time_limit_ms: 0.0,
     })
 });
 
@@ -73,7 +76,7 @@ pub fn save(){
     let c = CONFIG.read().unwrap();
 
     //Write the structure to a file
-    match fs::write("config.bin", bincode::serialize::<ConfigCmd>(&c).unwrap()) {
+    match fs::write("/dvr/config.bin", bincode::serialize::<ConfigCmd>(&c).unwrap()) {
         Ok(_) => {
             println!("Saved configuration!");
         },
@@ -91,7 +94,7 @@ pub fn load(){
     //Get read lock
     let mut c = CONFIG.write().unwrap();
 
-    match fs::read("config.bin") {
+    match fs::read("/dvr/config.bin") {
 
         Ok(contents) => {
 
