@@ -178,11 +178,6 @@ set_property PACKAGE_PIN AH9   [get_ports {ddr4_sdram_0_dqs_c[5]}]
 set_property PACKAGE_PIN AL8   [get_ports {ddr4_sdram_0_dqs_c[6]}]
 set_property PACKAGE_PIN AN8   [get_ports {ddr4_sdram_0_dqs_c[7]}]
 
-# -------------------------------------------------------------------------
-# Beam signal GPIO
-# -------------------------------------------------------------------------
-set_property PACKAGE_PIN G8       [get_ports {beam_signal[0]}]
-set_property IOSTANDARD LVCMOS33  [get_ports {beam_signal[0]}]
 
 #######################################################################
 #   User GPIO LEDs  (PL bank 88, LVCMOS33, active-high)

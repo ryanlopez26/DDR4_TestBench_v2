@@ -1,7 +1,7 @@
 {
   "design": {
     "design_info": {
-      "boundary_crc": "0x7AC878B7AF6B2D3E",
+      "boundary_crc": "0xCACA78AA7F69DEA2",
       "device": "xczu7ev-ffvc1156-2-e",
       "gen_directory": "../../../../DDR4_Tester.gen/sources_1/bd/System",
       "name": "System",
@@ -18,7 +18,9 @@
       "ilconcat_0": "",
       "proc_sys_reset_DDR": "",
       "proc_sys_reset_PL": "",
-      "util_vector_logic_4": ""
+      "util_vector_logic_4": "",
+      "ilslice_0": "",
+      "ilconstant_0": ""
     },
     "interface_ports": {
       "ddr4_sdram_0": {
@@ -39,11 +41,11 @@
             "value_src": "default"
           },
           "CAS_LATENCY": {
-            "value": "13",
+            "value": "12",
             "value_src": "user_prop"
           },
           "CAS_WRITE_LATENCY": {
-            "value": "10",
+            "value": "11",
             "value_src": "user_prop"
           },
           "CS_ENABLED": {
@@ -59,15 +61,15 @@
             "value_src": "user_prop"
           },
           "DATA_WIDTH": {
-            "value": "64",
+            "value": "16",
             "value_src": "user_prop"
           },
           "MEMORY_PART": {
-            "value": "MTA4ATF51264HZ-2G6",
+            "value": "MT40A512M16TB-062E",
             "value_src": "user_prop"
           },
           "MEMORY_TYPE": {
-            "value": "SODIMMs",
+            "value": "Components",
             "value_src": "user_prop"
           },
           "MEM_ADDR_MAP": {
@@ -79,7 +81,7 @@
             "value_src": "user_prop"
           },
           "TIMEPERIOD_PS": {
-            "value": "1200",
+            "value": "1250",
             "value_src": "user_prop"
           }
         },
@@ -133,25 +135,25 @@
           "DM_N": {
             "physical_name": "ddr4_sdram_0_dm_n",
             "direction": "IO",
-            "left": "7",
+            "left": "1",
             "right": "0"
           },
           "DQ": {
             "physical_name": "ddr4_sdram_0_dq",
             "direction": "IO",
-            "left": "63",
+            "left": "15",
             "right": "0"
           },
           "DQS_C": {
             "physical_name": "ddr4_sdram_0_dqs_c",
             "direction": "IO",
-            "left": "7",
+            "left": "1",
             "right": "0"
           },
           "DQS_T": {
             "physical_name": "ddr4_sdram_0_dqs_t",
             "direction": "IO",
-            "left": "7",
+            "left": "1",
             "right": "0"
           },
           "ODT": {
@@ -209,10 +211,22 @@
           }
         }
       },
-      "beam_signal": {
-        "direction": "I",
+      "clamp_request": {
+        "direction": "O",
         "left": "0",
-        "right": "0"
+        "right": "0",
+        "parameters": {
+          "PortWidth": {
+            "value": "1",
+            "value_src": "user_prop"
+          }
+        }
+      },
+      "beam_possible": {
+        "direction": "I"
+      },
+      "beam_active": {
+        "direction": "I"
       }
     },
     "components": {
@@ -2182,13 +2196,13 @@
             "value": "0"
           },
           "PSU__GPIO_EMIO_WIDTH": {
-            "value": "5"
+            "value": "11"
           },
           "PSU__GPIO_EMIO__PERIPHERAL__ENABLE": {
             "value": "1"
           },
           "PSU__GPIO_EMIO__PERIPHERAL__IO": {
-            "value": "5"
+            "value": "11"
           },
           "PSU__GPIO_EMIO__WIDTH": {
             "value": "[94:0]"
@@ -3269,7 +3283,7 @@
             "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
             "parameters": {
               "MAX_BURST_LENGTH": {
-                "value": "64"
+                "value": "256"
               },
               "NUM_READ_OUTSTANDING": {
                 "value": "8"
@@ -3319,7 +3333,7 @@
             "direction": "I",
             "parameters": {
               "FREQ_HZ": {
-                "value": "208250000",
+                "value": "200000000",
                 "value_src": "user_prop"
               },
               "PHASE": {
@@ -3385,25 +3399,37 @@
             "value": "None"
           },
           "C0.DDR4_AxiAddressWidth": {
-            "value": "32"
+            "value": "30"
           },
           "C0.DDR4_AxiIDWidth": {
             "value": "1"
           },
           "C0.DDR4_CasLatency": {
-            "value": "13"
+            "value": "12"
           },
           "C0.DDR4_CasWriteLatency": {
-            "value": "10"
+            "value": "11"
+          },
+          "C0.DDR4_DataWidth": {
+            "value": "16"
           },
           "C0.DDR4_InputClockPeriod": {
-            "value": "3359"
+            "value": "3333"
           },
           "C0.DDR4_MemoryPart": {
-            "value": "MTA4ATF51264HZ-2G6"
+            "value": "MT40A512M16TB-062E"
+          },
+          "C0.DDR4_MemoryType": {
+            "value": "Components"
+          },
+          "C0.DDR4_Ordering": {
+            "value": "Normal"
+          },
+          "C0.DDR4_Specify_MandD": {
+            "value": "false"
           },
           "C0.DDR4_TimePeriod": {
-            "value": "1200"
+            "value": "1250"
           },
           "C0_CLOCK_BOARD_INTERFACE": {
             "value": "clk_300mhz"
@@ -3437,8 +3463,8 @@
               "address_blocks": {
                 "C0_DDR4_ADDRESS_BLOCK": {
                   "base_address": "0",
-                  "range": "4G",
-                  "width": "32",
+                  "range": "1G",
+                  "width": "30",
                   "usage": "memory",
                   "offset_base_param": "C0_DDR4_MEMORY_MAP_BASEADDR",
                   "offset_high_param": "C0_DDR4_MEMORY_MAP_HIGHADDR"
@@ -3452,27 +3478,19 @@
         "vlnv": "xilinx.com:inline_hdl:ilconcat:1.0",
         "parameters": {
           "IN0_WIDTH": {
-            "value": "1",
-            "value_src": "propagated",
-            "value_mode": "auto"
+            "value": "1"
           },
           "IN1_WIDTH": {
-            "value": "4"
+            "value": "1"
           },
           "IN2_WIDTH": {
-            "value": "1",
-            "value_src": "propagated",
-            "value_mode": "auto"
+            "value": "4"
           },
           "IN3_WIDTH": {
-            "value": "1",
-            "value_src": "propagated",
-            "value_mode": "auto"
+            "value": "4"
           },
           "IN4_WIDTH": {
-            "value": "1",
-            "value_src": "propagated",
-            "value_mode": "manual"
+            "value": "1"
           },
           "IN5_WIDTH": {
             "value": "1",
@@ -3490,7 +3508,7 @@
             "value_mode": "auto"
           },
           "NUM_PORTS": {
-            "value": "2"
+            "value": "5"
           }
         }
       },
@@ -3525,6 +3543,31 @@
             "value": "1"
           }
         }
+      },
+      "ilslice_0": {
+        "vlnv": "xilinx.com:inline_hdl:ilslice:1.0",
+        "parameters": {
+          "DIN_FROM": {
+            "value": "10"
+          },
+          "DIN_TO": {
+            "value": "10"
+          },
+          "DIN_WIDTH": {
+            "value": "11"
+          }
+        }
+      },
+      "ilconstant_0": {
+        "vlnv": "xilinx.com:inline_hdl:ilconstant:1.0",
+        "parameters": {
+          "CONST_VAL": {
+            "value": "0b0001"
+          },
+          "CONST_WIDTH": {
+            "value": "4"
+          }
+        }
       }
     },
     "interface_nets": {
@@ -3554,10 +3597,16 @@
       }
     },
     "nets": {
-      "beam_signal_1": {
+      "beam_active_1": {
         "ports": [
-          "beam_signal",
+          "beam_active",
           "ilconcat_0/In0"
+        ]
+      },
+      "beam_possible_1": {
+        "ports": [
+          "beam_possible",
+          "ilconcat_0/In1"
         ]
       },
       "ddr4_0_c0_ddr4_ui_clk": {
@@ -3578,13 +3627,25 @@
         "ports": [
           "debug_leds_0/led",
           "led_0",
-          "ilconcat_0/In1"
+          "ilconcat_0/In2"
         ]
       },
       "ilconcat_0_dout": {
         "ports": [
           "ilconcat_0/dout",
           "zynq_ultra_ps_e_0/emio_gpio_i"
+        ]
+      },
+      "ilconstant_0_dout": {
+        "ports": [
+          "ilconstant_0/dout",
+          "ilconcat_0/In3"
+        ]
+      },
+      "ilslice_0_Dout": {
+        "ports": [
+          "ilslice_0/Dout",
+          "clamp_request"
         ]
       },
       "ilvector_logic_1_Res": {
@@ -3611,6 +3672,12 @@
         "ports": [
           "util_vector_logic_4/Res",
           "ddr4_0/sys_rst"
+        ]
+      },
+      "zynq_ultra_ps_e_0_emio_gpio_o": {
+        "ports": [
+          "zynq_ultra_ps_e_0/emio_gpio_o",
+          "ilslice_0/Din"
         ]
       },
       "zynq_ultra_ps_e_0_pl_clk0": {

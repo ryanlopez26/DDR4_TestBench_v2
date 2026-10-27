@@ -66,7 +66,7 @@
 //  0x03  READ            u16 rid                     -> (nothing)
 //  0x04  CONFIG          ConfigCmd, 34 bytes         -> 1-byte ACK
 //  0x05  DYNAMIC         u16 rid                     -> (nothing)
-//  0x06  INFO            (empty)                     -> InfoRsp, 5 bools
+//  0x06  INFO            (empty)                     -> InfoRsp, 11 bools
 //  0x07  GENRUN          (empty)                     -> u16 run id
 //  0x08  GENRECORD       (empty)                     -> u16 record id
 //  0x09  SAVERUN         Run                         -> bool success
@@ -314,14 +314,73 @@ namespace DDR4_TestingApp
         public bool IsStalled => IsIdle && Queue.Length > 0;
     }
 
-    /// <summary>types.rs InfoRsp — the five read-only EMIO lines from gpio.rs.</summary>
+    /// <summary>
+    /// types.rs InfoRsp — the read-only EMIO lines from gpio.rs.
+    ///
+    /// FIELD ORDER IS THE WIRE ORDER. bincode serializes in struct DECLARATION
+    /// order, so this must mirror types.rs exactly. Note that commands.rs builds the
+    /// struct with its members written in a different order than they are declared —
+    /// harmless, since serde ignores initializer order, but don't use the command
+    /// handler as the reference when checking this.
+    /// </summary>
     public struct InfoRsp
     {
-        public bool BeamSignal;
+        /// <summary>Beam is available at the facility (EMIO 79).</summary>
+        public bool BeamPossible;
+
+        /// <summary>Beam is on target right now (EMIO 78). This replaced BeamSignal.</summary>
+        public bool BeamActive;
+
+        /// <summary>
+        /// The server has heard a GETPOWERMODE request recently. This is a HEARTBEAT,
+        /// not a hardware line: the server stamps a timestamp every time
+        /// <see cref="GetPowerModeAsync"/> is called and reports whether that stamp is
+        /// fresh. If nothing polls GETPOWERMODE, this reads false — meaning "no
+        /// external power controller is listening", which is the point.
+        /// </summary>
+        public bool PowerServicesProvided;
+
+        /// <summary>DDR4 controller has finished calibrating (EMIO 80).</summary>
         public bool ControllerCalibrated;
+
+        /// <summary>UI clock alive (EMIO 81).</summary>
         public bool UiClock;
+
+        /// <summary>PL clock alive (EMIO 82).</summary>
         public bool PlClock;
+
+        /// <summary>A bitstream is loaded in the PL (EMIO 83).</summary>
         public bool FpgaLoaded;
+
+        /// <summary>SDRAM select lines (EMIO 84-87).</summary>
+        public bool Sdram0;
+        public bool Sdram1;
+        public bool Sdram2;
+        public bool Sdram3;
+
+        /// <summary>The four select lines as an array, index 0-3.</summary>
+        public bool[] SdramSelects => new[] { Sdram0, Sdram1, Sdram2, Sdram3 };
+
+        /// <summary>
+        /// Index of the single asserted SDRAM select, or null when none or more than
+        /// one is asserted — both of which are states worth showing differently from
+        /// "chip 0 selected".
+        /// </summary>
+        public int? SelectedSdram
+        {
+            get
+            {
+                bool[] s = SdramSelects;
+                int found = -1;
+                for (int i = 0; i < s.Length; i++)
+                {
+                    if (!s[i]) continue;
+                    if (found >= 0) return null;   // more than one asserted
+                    found = i;
+                }
+                return found >= 0 ? found : (int?)null;
+            }
+        }
     }
 
     /// <summary>
@@ -1239,13 +1298,20 @@ namespace DDR4_TestingApp
                 var p = await RequestAsync(CMD_INFO, Array.Empty<byte>(), CMD_INFO, t)
                             .ConfigureAwait(false);
                 var r = new BincodeReader(p);
+                // Declaration order from types.rs — see the note on InfoRsp.
                 var info = new InfoRsp
                 {
-                    BeamSignal = r.ReadBool(),
+                    BeamPossible = r.ReadBool(),
+                    BeamActive = r.ReadBool(),
+                    PowerServicesProvided = r.ReadBool(),
                     ControllerCalibrated = r.ReadBool(),
                     UiClock = r.ReadBool(),
                     PlClock = r.ReadBool(),
                     FpgaLoaded = r.ReadBool(),
+                    Sdram0 = r.ReadBool(),
+                    Sdram1 = r.ReadBool(),
+                    Sdram2 = r.ReadBool(),
+                    Sdram3 = r.ReadBool(),
                 };
                 r.ExpectEnd("InfoRsp");
                 return info;
@@ -1255,6 +1321,10 @@ namespace DDR4_TestingApp
         /// Ask whether the server wants to be powered down or rebooted. Both flags stay
         /// false until the server has unmounted /dvr and entered safe mode. The server
         /// does not reboot itself — acting on this is the operator's job.
+        ///
+        /// Calling this also serves as a HEARTBEAT: the server stamps the time of every
+        /// request and reports it back through InfoRsp.PowerServicesProvided, so a UI
+        /// that never polls this reads as "no power controller attached".
         /// </summary>
         public static Task<PowerMode> GetPowerModeAsync(CancellationToken ct = default) =>
             RunAsync(async t =>
