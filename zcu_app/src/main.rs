@@ -19,8 +19,20 @@ mod archive;
 mod tools;
 
 static THREADS: RwLock<Vec<JoinHandle<()>>> = RwLock::new(Vec::new()); 
-static PM: RwLock<PowerManager> = RwLock::new(PowerManager { power_request: 0, safe: false, last_power_check: None });
+static PM: RwLock<PowerManager> = RwLock::new(PowerManager { power_request: 0, safe: false, last_power_check: None, clamp: false });
 
+// Beam request
+static REQUEST_BEAM: RwLock<bool> = RwLock::new(false);
+
+// Beam modifier 
+pub fn set_beam_request(req: bool){
+    *REQUEST_BEAM.write().unwrap() = req;
+    gpio::set_clamp_request(req);
+}
+
+pub fn get_beam_request() -> bool {
+    *REQUEST_BEAM.read().unwrap()
+}
 
 // External power control
 pub struct PowerManager {
@@ -30,6 +42,9 @@ pub struct PowerManager {
 
     // Safeguard status - Whether or not it is safe to request power change
     pub safe: bool,
+
+    // Clamp request
+    pub clamp: bool,
 
     // Last power check
     pub last_power_check: Option<Instant>

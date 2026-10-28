@@ -45,7 +45,7 @@ pub const CMD_DELRECORD: u8 = 0x15;
 pub const CMD_GETFPGAIMAGES: u8 = 0x16;
 pub const CMD_REQUESTPOWERSTATE: u8 = 0x17;
 pub const CMD_CLAMPCMD: u8 = 0x18;
-
+pub const CMD_EXPOSE: u8 = 0x19;
 
 pub const PAGE_SIZE: usize = 1024; // Size of data pages for dump responses
 

@@ -23,6 +23,12 @@ pub struct VerifyCmd {
 
 #[repr(C)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ExposeCmd {
+    pub uuid: u16
+}
+
+#[repr(C)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SaveRunCmd {
     pub run: Run
 }
@@ -136,7 +142,7 @@ pub struct ConfigCmd {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InfoRsp {
     pub beam_possible: bool,
-    pub beam_active: bool,
+    pub beam_present: bool,
     pub power_services_provided: bool,
     pub controller_calibrated: bool,
     pub ui_clock: bool,
@@ -189,7 +195,8 @@ pub struct GetCaptureRsp {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetPowerModeRsp {
     pub request_poweroff: bool,
-    pub request_reboot: bool
+    pub request_reboot: bool,
+    pub request_beam: bool
 }
 
 #[repr(C)]

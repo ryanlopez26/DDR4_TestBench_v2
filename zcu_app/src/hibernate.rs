@@ -63,7 +63,7 @@ pub fn load(){
                     println!("Hibernated requests restored!");
 
                     //Delete hibernation file
-                    fs::remove_file("hibernate.bin").unwrap();
+                    fs::remove_file("/dvr/hibernate.bin").unwrap();
                 },
                 Err(_) => {println!("Hibernation file is invalid. Not loaded.")},
             }

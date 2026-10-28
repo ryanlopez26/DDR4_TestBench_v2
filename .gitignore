@@ -2,6 +2,8 @@
 # DDR4_TestBench .gitignore
 # ============================================================
 
+zcu_app/vendor
+
 *.img
 *.img.bmap
 

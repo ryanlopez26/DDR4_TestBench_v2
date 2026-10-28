@@ -1,8 +1,7 @@
 use std::{path::Path, sync::RwLock, time::Instant};
-use gpio_cdev::LineDirection::In;
 use serde::{Deserialize, Serialize};
 
-use crate::{PM, archive, gpio, hibernate, record::{self, Record}, tools::{self, get_epoch}, types::ConfigCmd};
+use crate::{PM, archive, get_beam_request, gpio, hibernate, record::{self, Record}, set_beam_request, tools::{self, get_epoch}, types::ConfigCmd};
 use std::{thread, time::Duration};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -159,7 +158,9 @@ pub fn engine_main(){
                 log_timestamp: Vec::new(),
                 log_error_rate: Vec::new(),
                 log_current_address: Vec::new(),
-                log_beam_signal: Vec::new(),
+                log_beam_present: Vec::new(),
+                log_beam_request: Vec::new(),
+                log_beam_possible: Vec::new(),
                 log_sefi_detected: Vec::new(),
                 correct_bits: 0,
                 incorrect_bits: 0,
@@ -228,7 +229,9 @@ pub fn engine_main(){
                                     //Record datapoints
                                     r.log_timestamp.push(start.elapsed().as_secs_f64());
                                     r.log_bits_incorrect.push(r.incorrect_bits);
-                                    r.log_beam_signal.push(gpio::get_beam_signal());
+                                    r.log_beam_possible.push(gpio::get_beam_possible());
+                                    r.log_beam_present.push(gpio::get_beam_present());
+                                    r.log_beam_request.push(get_beam_request());
                                     r.log_current_address.push(block_end);
                                     r.log_bits_correct.push(r.correct_bits);
 
@@ -359,7 +362,9 @@ pub fn engine_main(){
                                     r.log_timestamp.push(start.elapsed().as_secs_f64());
                                     r.log_bits_incorrect.push(r.incorrect_bits);
                                     r.log_bits_correct.push(r.correct_bits);
-                                    r.log_beam_signal.push(gpio::get_beam_signal());
+                                    r.log_beam_possible.push(gpio::get_beam_possible());
+                                    r.log_beam_present.push(gpio::get_beam_present());
+                                    r.log_beam_request.push(get_beam_request());
                                     r.log_current_address.push(blk_ind * config.block_size);
                                     r.log_err_bins.push(r.err_bins.unwrap());
                                     r.log_adj_err_bins.push(r.adj_err_bins.unwrap());
@@ -440,7 +445,9 @@ pub fn engine_main(){
 
                                     //Record datapoints
                                     r.log_timestamp.push(start.elapsed().as_secs_f64());
-                                    r.log_beam_signal.push(gpio::get_beam_signal());
+                                    r.log_beam_possible.push(gpio::get_beam_possible());
+                                    r.log_beam_present.push(gpio::get_beam_present());
+                                    r.log_beam_request.push(get_beam_request());
                                     r.log_bits_incorrect.push(r.incorrect_bits);
                                     r.log_bits_processed.push(r.processed_bits);
                                     r.log_current_address.push(blk_ind * config.block_size);
@@ -492,6 +499,9 @@ pub fn engine_main(){
 
                         // Beam start time
                         let mut beam_start_instant = Instant::now();
+
+                        //Timers for SEFI
+                        let mut last_below_threshold = Instant::now();
                      
                         // Main process loop for dynamic process
                         'dynamic: loop {
@@ -504,7 +514,7 @@ pub fn engine_main(){
 
 
                                     // Get beam signal 
-                                    let b = gpio::get_beam_active();
+                                    let b = gpio::get_beam_present();
 
                                     // Update timers
                                     match b {
@@ -522,6 +532,11 @@ pub fn engine_main(){
                                             have_started = true;
                                             beam_start_instant = Instant::now();
 
+                                        } else {
+                                            //Request the beam if we aren't already
+                                            if !get_beam_request() {
+                                                set_beam_request(true);
+                                            } 
                                         }
 
                                     } else {
@@ -637,13 +652,23 @@ pub fn engine_main(){
                                             r.exposure_time = Some(beam_start_instant.elapsed().as_secs_f64());
 
                                             //Check if ratio exceeds limit
-                                            if ratio >= config.sefi_threshold &&
-                                               r.time_to_sefi.is_none()
+                                            if ratio >= config.sefi_threshold 
                                             {
 
-                                                //SEFI Occurred
-                                                r.time_to_sefi = Some(beam_start_instant.elapsed().as_secs_f64());
+                                                //We are in SEFI territory, ensure it has been occurring long enough to qualify
+                                                if last_below_threshold.elapsed() > SIGNAL_HOLD_REQUIREMENT {
 
+                                                    //Qualifies - SEFI occurred
+                                                    r.time_to_sefi = Some(beam_start_instant.elapsed().as_secs_f64());
+
+                                                    //Disable beam (prevent latch up)
+                                                    set_beam_request(false);
+
+                                                }
+
+                                            } else {
+                                                //No sefi
+                                                last_below_threshold = Instant::now();
                                             }
 
                                         }                                      
@@ -652,7 +677,9 @@ pub fn engine_main(){
                                         r.log_timestamp.push(start.elapsed().as_secs_f64());
                                         r.log_bits_incorrect.push(r.incorrect_bits);
                                         r.log_bits_correct.push(r.correct_bits);
-                                        r.log_beam_signal.push(gpio::get_beam_active());
+                                        r.log_beam_possible.push(gpio::get_beam_possible());
+                                        r.log_beam_present.push(gpio::get_beam_present());
+                                        r.log_beam_request.push(get_beam_request());
                                         r.log_current_address.push(blk_ind * config.block_size);
                                         r.log_err_bins.push(r.err_bins.unwrap());
                                         r.log_adj_err_bins.push(r.adj_err_bins.unwrap());
@@ -712,28 +739,46 @@ pub fn engine_main(){
 
                         //Initialize timing variables
 
-                        let mut active_last_low = Instant::now();
-                        let mut active_last_high = Instant::now();
+                        let mut present_last_low = Instant::now();
+                        let mut present_last_high = Instant::now();
                         let mut possible_last_low = Instant::now();
                         let mut possible_last_high = Instant::now();
 
-                        let mut exposure_begin: Option<Instant> = None;
+
+                        let mut exposure_total: Duration = Duration::new(0, 0);
+
+                        //Delayed exit timer (used to allow signals to settle before ending the record)
+                        let mut delayed_exit: Option<Instant> = None;
 
                         //Keep looping
                         loop {
 
                             //Update timers
-                            if gpio::get_beam_active() {
-                                active_last_high = Instant::now();
+                            if gpio::get_beam_present() {
+                                present_last_high = Instant::now();
                             } else {
-                                active_last_low = Instant::now();
+                                
+                                //Tally how long it has been present for
+                                exposure_total += present_last_low.elapsed();
+
+                                //Update the timer
+                                present_last_low = Instant::now();
+
                             }
 
                             if gpio::get_beam_possible() {
                                 possible_last_high = Instant::now();
                             } else {
                                 possible_last_low = Instant::now();
-                            }                      
+                            }
+
+                            // Check if we are ready to request beam
+                            if (possible_last_low.elapsed() > SIGNAL_HOLD_REQUIREMENT) && !get_beam_request() {
+
+                                // We are ready to request beam!
+                                set_beam_request(true);                              
+
+                            }
 
                             //Check if we need to update
                             if last_update.elapsed() > UPDATE_FREQUENCY {
@@ -744,23 +789,17 @@ pub fn engine_main(){
                                 //Record datapoints
                                 r.log_timestamp.push(start.elapsed().as_secs_f64());
                                 r.log_beam_possible.push(gpio::get_beam_possible());
-                                r.log_beam_active.push(gpio::get_beam_active());
-                                r.log_beam_clamp.push(gpio::get_clamp_request());
-                                r.exposure_time = match exposure_begin {
-                                    Some(e) => Some(e.elapsed().as_secs_f64()),
-                                    None => None,
-                                };
-                            
+                                r.log_beam_present.push(gpio::get_beam_present());
+                                r.log_beam_request.push(get_beam_request());
+                                r.exposure_time = Some((exposure_total + present_last_low.elapsed()).as_secs_f64());
+
                                 //Lock the status struct
                                 let mut s = STATUS.write().unwrap();
 
                                 //Update the status struct
                                 s.active_record = Some(r.clone());
                                 s.task_progress = match config.exposure_time_limit_enabled {
-                                    true => match exposure_begin {
-                                        Some(e) => e.elapsed().as_millis() as f64 / config.exposure_time_limit_ms as f64,
-                                        None => 0.0,
-                                    },
+                                    true => r.exposure_time.unwrap() as f64 / config.exposure_time_limit_ms as f64,
                                     false => 0.5,
                                 };
 
@@ -772,6 +811,7 @@ pub fn engine_main(){
                                     // Must abort right now
                                     r.time_ended = get_epoch();
                                     r.time_duration = r.time_ended - r.time_started;
+
                                     r.aborted = true;
 
                                     // Submit whatever we have
@@ -783,10 +823,42 @@ pub fn engine_main(){
 
                             }
 
-                            //Check if we should start exposure
-                            if(active_last_high )
+                            //End the test if beam possible disappears (after having been there)
+                            if possible_last_high.elapsed() > SIGNAL_HOLD_REQUIREMENT && get_beam_request() && delayed_exit.is_none() {
+
+                                //Perform a delayed exit
+                                delayed_exit = Some(Instant::now());
+
+                                //Request clamp
+                                set_beam_request(false);
+
+                            }
+
+                            //End the test if exposure time limit is present and exceeded
+                            if config.exposure_time_limit_enabled && r.exposure_time.is_some() {
+
+                                //Check if over limit
+                                if config.exposure_time_limit_ms <= (r.exposure_time.unwrap()) * 1000.0 && delayed_exit.is_none() {
+
+                                    //Finish test
+                                    delayed_exit = Some(Instant::now());
+
+                                    //Request clamp
+                                    set_beam_request(false);
+
+                                }
 
 
+                            }
+
+                            //Check if ready to terminate record
+                            if delayed_exit.is_some() {
+                                //Check if ready
+                                if delayed_exit.unwrap().elapsed() > SIGNAL_HOLD_REQUIREMENT {
+                                    //Exit 
+                                    break;
+                                }
+                            }
 
                         }
                     

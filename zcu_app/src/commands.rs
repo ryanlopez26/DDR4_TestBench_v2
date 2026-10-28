@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bincode::Options;
 
 use crate::archive::{RECORD_LOG, RUN_LOG};
-use crate::{PM, archive, config, fpga, gpio, task_engine, types::*};
+use crate::{PM, archive, config, fpga, get_beam_request, gpio, task_engine, types::*};
 
 use crate::server::send_response;
 use crate::config::*;
@@ -91,12 +91,12 @@ pub fn info_command(stream: &mut TcpStream){
         pl_clock: gpio::get_pl_clock_signal(),
         fpga_loaded: gpio::get_fpga_loaded_status(),
         beam_possible: gpio::get_beam_possible(),
-        beam_active: gpio::get_beam_active(),
+        beam_present: gpio::get_beam_present(),
         power_services_provided: {
                 //Check if power services are present
                 match PM.read().unwrap().last_power_check {
                     Some(last_check) => {
-                        if last_check.duration_since(Instant::now()) > Duration::from_millis(200) {
+                        if last_check.elapsed() < Duration::from_millis(250) {
                             true
                         } else {
                             false
@@ -300,6 +300,7 @@ pub fn getpowermode_command(stream: &mut TcpStream) {
     let mut rsp = GetPowerModeRsp {
         request_poweroff: false,
         request_reboot: false,
+        request_beam: get_beam_request()
     };
 
     //Check if we are in safe mode

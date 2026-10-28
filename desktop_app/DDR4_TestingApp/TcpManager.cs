@@ -1,44 +1,83 @@
 // TcpManager.cs — C# client for the Rust ZCU104 DDR4-tester TCP server
 // ("ZCU Server V3 — NSRL Edition").
 //
-// ============================== WHAT CHANGED ==============================
+// ============================== WHAT CHANGED THIS ROUND ==============================
 //
-// This is a rewrite, not a patch. The server's execution model is different:
+// Four server-side fixes landed and one command was added. None of them is a
+// flag day: an old client keeps working, it just cannot reach Expose and
+// carries stale documentation.
 //
-//   OLD: a command (Write/Verify/Dump/Dynamic) ran synchronously on the
-//        server's single thread and streamed progress frames back on the same
-//        connection until percent_complete >= 100.
+//  * NEW COMMAND 0x19 CMD_EXPOSE { u16 rid }, send-only. RecordType::Expose is
+//    finally reachable — see QueueExposeAsync, and read its remarks before
+//    queueing one, because an Expose task has two ways to sit forever.
 //
-//   NEW: Write/Verify/Read/Dynamic only PUSH A TASK onto the engine queue and
-//        send NO RESPONSE AT ALL. A separate engine thread runs one task at a
-//        time. Progress comes from polling CMD_ENGINESTATUS. The finished
-//        Record is written to /dvr/records and fetched with CMD_GETRECORD.
-//        Byte-level data goes to a capture file fetched with CMD_GETCAPTURE.
+//  * ConfigCmd.exposure_time_limit_ms IS NOW GENUINELY MILLISECONDS. The engine
+//    compares it against exposure_time * 1000.0; it used to compare it against
+//    raw seconds. Any limit tuned against the old build is now 1000x too short:
+//    30.0 used to mean thirty seconds and now means thirty milliseconds.
 //
-// Consequences for callers:
+//  * CMD_CLAMPCMD goes through set_beam_request() instead of poking the GPIO
+//    directly, so it now moves REQUEST_BEAM as well as the line, and no longer
+//    panics the handler thread on a GPIO error.
+//
+//  * InfoRsp.power_services_provided actually works. Its freshness test was
+//    computed backwards and latched true once; it is a real 250 ms heartbeat
+//    now, so a client polling GETPOWERMODE slower than that reads false.
+//
+// ============================= PRECEDING ROUND (still current) ===============
+//
+// Against the previous client, six things moved. The first two are flag days —
+// an old client misdecodes the frame rather than failing cleanly.
+//
+//  1. EngineStatusRsp NO LONGER CARRIES THE RECORD. `current_request_type` is
+//     now Option<RecordType> (1 tag byte + u32 variant), not Option<Record>.
+//     EngineStatus.ActiveRecord is GONE — there is no rid, no progress arrays,
+//     and no bit counts in a status poll any more. Polling is cheap now; use
+//     GETRECORD once the record lands if you need the numbers.
+//     *** This breaks any caller that read status.ActiveRecord (EngineStatusPoller,
+//         Launcher, RecordManager). See the note on EngineStatus. ***
+//
+//  2. Record's single `log_beam_signal` SPLIT INTO THREE series:
+//        log_beam_present   — beam on target (EMIO 78)
+//        log_beam_possible  — facility says beam is available (EMIO 79)
+//        log_beam_request   — what the server is asking for (clamp output)
+//     In that order, between log_current_address and log_sefi_detected.
+//     Record.LogBeamSignal survives as a read-only alias for LogBeamPresent so
+//     existing display code still compiles.
+//
+//  3. RecordType gained Expose = 4. Any `switch` on RecordType without a
+//     default arm now throws at runtime on an Expose record.
+//
+//  4. ConfigCmd gained exposure_time_limit_enabled (bool) and
+//     exposure_time_limit_ms (f64). WireSize is 43 bytes, was 34.
+//
+//  5. GetPowerModeRsp gained request_beam (bool), third field. This mirrors the
+//     server's REQUEST_BEAM global, which is also what drives the clamp output.
+//
+//  6. New command 0x18 CMD_CLAMPCMD { bool state } — drive the clamp-request
+//     line directly. Send-only, no reply. See SetClampAsync for the caveat.
+//
+// ============================== EXECUTION MODEL ==============================
+//
+//   Write/Verify/Read/Dynamic only PUSH A TASK onto the engine queue and send
+//   NO RESPONSE AT ALL. A separate engine thread runs one task at a time.
+//   Progress comes from polling CMD_ENGINESTATUS. The finished Record is
+//   written to /dvr/records and fetched with CMD_GETRECORD. Byte-level data
+//   goes to a capture file fetched with CMD_GETCAPTURE.
+//
 //   * Do NOT await a reply after queueing a task — you will block forever.
 //     Queue*Async methods return as soon as the frame is on the wire.
 //   * A task is identified by a u16 "rid" obtained from CMD_GENRECORD.
-//   * DumpPage / ExpectedDumpPages / PAGE_SIZE / ComparisonMode are gone.
-//     The old paged dump is replaced by: queue a Read record, wait for it,
-//     then DownloadCaptureAsync. A Read capture holds raw bytes read back;
-//     a Verify or Dynamic capture holds (actual XOR expected) per byte, which
-//     is what ComparisonMode used to select.
-//   * The UUID availability check is gone. CMD_GENRECORD / CMD_GENRUN ALLOCATE
-//     an id instead of testing one.
-//   * Write/Verify/Dynamic no longer carry pattern+seed. Those now live in the
-//     persistent CONFIG (data_pattern / pattern_seed), so apply a Config first.
+//   * Write/Verify/Dynamic carry no pattern+seed. Those live in the persistent
+//     CONFIG (data_pattern / pattern_seed), so apply a Config first.
 //
 // ============================== FRAMING ==============================
 //
 //     [SYNC u32 BE = 0xDEADBEEF]
 //     [CMD  u8 ]
-//     [LEN  u32 BE]          <-- WAS u16. Header is 9 bytes now, not 7.
+//     [LEN  u32 BE]
 //     [PAYLOAD ... LEN bytes]
 //     [TERM u32 BE = 0xCAFEBABE]
-//
-// This is a flag day: a u16 length against the new server desyncs the frame
-// immediately. Both halves must be deployed together.
 //
 // ============================== PAYLOAD ENCODING ==============================
 //
@@ -53,44 +92,46 @@
 //   Vec<T>          u64 BE element count, then the elements back to back
 //   [T; N]          N elements, NO length prefix
 //   enum variant    u32 BE variant index (RecordType: Read=0 Verify=1
-//                   Write=2 Dynamic=3)
+//                   Write=2 Dynamic=3 Expose=4)
 //
 // reject_trailing_bytes means an OUTBOUND payload must match the server struct
 // byte-for-byte. One extra byte is an error, not slack.
 //
 // ============================== COMMANDS ==============================
 //
-//  Code  Name            Payload (-> reply)
-//  0x01  WRITE           u16 rid                     -> (nothing)
-//  0x02  VERIFY          u16 rid                     -> (nothing)
-//  0x03  READ            u16 rid                     -> (nothing)
-//  0x04  CONFIG          ConfigCmd, 34 bytes         -> 1-byte ACK
-//  0x05  DYNAMIC         DynamicCmd, 7 bytes         -> (nothing)
-//  0x06  INFO            (empty)                     -> InfoRsp, 12 bools
-//  0x07  GENRUN          (empty)                     -> u16 run id
-//  0x08  GENRECORD       (empty)                     -> u16 record id
-//  0x09  SAVERUN         Run                         -> bool success
-//  0x0A  ABORT           (empty)                     -> (nothing)
-//  0x0B  GETRECORD       u16 rid                     -> Option<Record>
-//  0x0C  GETRUN          u16 id                      -> Option<Run>
-//  0x0D  GETCAPTURE      u16 rid                     -> RAW BYTES (see below)
-//  0x0E  ENGINESTATUS    (empty)                     -> EngineStatusRsp
-//  0x0F  GETPOWERMODE    (empty)                     -> 2 bools
-//  0x10  LISTRECORDS     (empty)                     -> ListRecordsRsp
-//  0x11  LISTRUNS        (empty)                     -> ListRunsRsp
-//  0x12  GETFPGAIMAGE    (empty)                     -> Option<String>
-//  0x13  SETFPGAIMAGE    String image_name           -> bool success
-//  0x14  DELRUN          u16 id                      -> bool success
-//  0x15  DELRECORD       u16 rid                     -> bool success
-//  0x16  GETFPGAIMAGES   (empty)                     -> Vec<String> images
-//  0x17  REQUESTPOWERSTATE u8 state (0/1/2)         -> bool success
+//  Code  Name              Payload (-> reply)
+//  0x01  WRITE             u16 rid                     -> (nothing)
+//  0x02  VERIFY            u16 rid                     -> (nothing)
+//  0x03  READ              u16 rid                     -> (nothing)
+//  0x04  CONFIG            ConfigCmd, 43 bytes         -> 1-byte ACK
+//  0x05  DYNAMIC           DynamicCmd, 7 bytes         -> (nothing)
+//  0x06  INFO              (empty)                     -> InfoRsp, 12 bools
+//  0x07  GENRUN            (empty)                     -> u16 run id
+//  0x08  GENRECORD         (empty)                     -> u16 record id
+//  0x09  SAVERUN           Run                         -> bool success
+//  0x0A  ABORT             (empty)                     -> (nothing)
+//  0x0B  GETRECORD         u16 rid                     -> Option<Record>
+//  0x0C  GETRUN            u16 id                      -> Option<Run>
+//  0x0D  GETCAPTURE        u16 rid                     -> RAW BYTES (see below)
+//  0x0E  ENGINESTATUS      (empty)                     -> EngineStatusRsp
+//  0x0F  GETPOWERMODE      (empty)                     -> 3 bools
+//  0x10  LISTRECORDS       (empty)                     -> ListRecordsRsp
+//  0x11  LISTRUNS          (empty)                     -> ListRunsRsp
+//  0x12  GETFPGAIMAGE      (empty)                     -> Option<String>
+//  0x13  SETFPGAIMAGE      String image_name           -> bool success
+//  0x14  DELRUN            u16 id                      -> bool success
+//  0x15  DELRECORD         u16 rid                     -> bool success
+//  0x16  GETFPGAIMAGES     (empty)                     -> Vec<String> images
+//  0x17  REQUESTPOWERSTATE u8 state (0/1/2)            -> bool success
+//  0x18  CLAMPCMD          bool state                  -> (nothing)
+//  0x19  EXPOSE            u16 rid                     -> (nothing)
 //
 // CMD_GETCAPTURE is the one command whose reply is NOT bincode. The server
 // streams the capture file straight from disk to the socket, so the payload is
 // the raw file contents and LEN is the file size. LEN == 0 means "no capture"
-// (missing file, or /dvr unmounted in safe mode). Captures run to hundreds of
-// megabytes, so never read one into a byte[] — use DownloadCaptureAsync, which
-// copies to a Stream in chunks.
+// (missing file, /dvr unmounted in safe mode, or an Expose record, which never
+// writes any capture bytes). Captures run to hundreds of megabytes, so never
+// read one into a byte[] — use DownloadCaptureAsync, which copies in chunks.
 //
 // ============================== SAMPLING GEOMETRY ==============================
 //
@@ -126,6 +167,18 @@ namespace DDR4_TestingApp
         Verify = 1,
         Write = 2,
         Dynamic = 3,
+
+        /// <summary>
+        /// Beam-exposure bookkeeping: no memory traffic at all. The engine waits for
+        /// beam-possible, asserts the beam request, tallies how long beam-present was
+        /// high into <see cref="Record.ExposureTime"/>, and ends when beam-possible
+        /// drops or the configured exposure limit is reached. An Expose record has no
+        /// bit counts and an EMPTY capture file.
+        ///
+        /// Queued with CMD_EXPOSE (0x19) — see
+        /// <see cref="TcpManager.QueueExposeAsync"/>.
+        /// </summary>
+        Expose = 4,
     }
 
     /// <summary>Values accepted by CMD_REQUESTPOWERSTATE / PowerManager.power_request.</summary>
@@ -147,24 +200,43 @@ namespace DDR4_TestingApp
     // ============================== Wire types ==============================
 
     /// <summary>
-    /// types.rs ConfigCmd — 34 bytes on the wire. Field order here MUST match the
-    /// Rust declaration order, since that is what determines the bincode layout.
+    /// types.rs ConfigCmd — 43 bytes on the wire (was 34; the two exposure fields are
+    /// new). Field order here MUST match the Rust declaration order, since that is what
+    /// determines the bincode layout.
     /// </summary>
     public struct ConfigCmd
     {
-        public bool EnableLogging;      //  0  (1)
-        public uint NumBlocks;          //  1  (4)
-        public uint BlockSize;          //  5  (4)
-        public uint BlockFactor;        //  9  (4)
-        public double SefiThreshold;    // 13  (8)  fraction of bad samples, 0..1
-        public byte DataPattern;        // 21  (1)
-        public ulong PatternSeed;       // 22  (8)
-        public bool IsX16;              // 30  (1)
-        public byte EnabledByteLanes;   // 31  (1)
-        public bool FpgaAutoConfig;     // 32  (1)
-        public bool AutomatedSefiMode;  // 33  (1)
+        public bool EnableLogging;            //  0  (1)
+        public uint NumBlocks;                //  1  (4)
+        public uint BlockSize;                //  5  (4)
+        public uint BlockFactor;              //  9  (4)
+        public double SefiThreshold;          // 13  (8)  fraction of bad samples, 0..1
+        public byte DataPattern;              // 21  (1)
+        public ulong PatternSeed;             // 22  (8)
+        public bool IsX16;                    // 30  (1)
+        public byte EnabledByteLanes;         // 31  (1)
+        public bool FpgaAutoConfig;           // 32  (1)
+        public bool AutomatedSefiMode;        // 33  (1)
+        public bool ExposureTimeLimitEnabled; // 34  (1)  NEW
+        public double ExposureTimeLimitMs;    // 35  (8)  NEW — but see the remark
 
-        public const int WireSize = 34;
+        public const int WireSize = 43;
+
+        /// <summary>
+        /// The same limit in seconds, for call sites that think in seconds.
+        ///
+        /// The units are right on the server now: task_engine.rs tests
+        /// <c>exposure_time_limit_ms &lt;= r.exposure_time * 1000.0</c>, and
+        /// <c>r.exposure_time</c> comes from <c>Duration::as_secs_f64()</c>, so it is
+        /// milliseconds against milliseconds. An earlier build compared against raw
+        /// seconds — a 30-second cap was 30.0 there and is 30000.0 here, so a
+        /// config.bin written before that fix now caps exposure 1000x too early.
+        /// </summary>
+        public double ExposureTimeLimitSeconds
+        {
+            get => ExposureTimeLimitMs / 1000.0;
+            set => ExposureTimeLimitMs = value * 1000.0;
+        }
 
         /// <summary>Matches the server's built-in defaults (config.rs CONFIG).</summary>
         public static ConfigCmd Default => new ConfigCmd
@@ -180,6 +252,8 @@ namespace DDR4_TestingApp
             EnabledByteLanes = 0xFF,
             FpgaAutoConfig = false,
             AutomatedSefiMode = false,
+            ExposureTimeLimitEnabled = false,
+            ExposureTimeLimitMs = 0.0,
         };
 
         /// <summary>
@@ -213,6 +287,18 @@ namespace DDR4_TestingApp
                     $"DataPattern {DataPattern} is invalid (0 = zeros, 1 = ones, " +
                     "2 = pseudorandom). The server's Write path aborts the engine " +
                     "thread on an unknown pattern.");
+
+            if (ExposureTimeLimitEnabled && !(ExposureTimeLimitMs > 0.0))
+                throw new ArgumentException(
+                    "ExposureTimeLimitMs must be > 0 when ExposureTimeLimitEnabled is " +
+                    "set. The engine's Expose arm ends the record as soon as " +
+                    "exposure_time_limit_ms <= exposure_time * 1000, so a limit of 0 " +
+                    "closes the record on its first progress tick. The value is in " +
+                    "MILLISECONDS — use ExposureTimeLimitSeconds if you think in " +
+                    "seconds.");
+
+            if (double.IsNaN(ExposureTimeLimitMs) || double.IsInfinity(ExposureTimeLimitMs))
+                throw new ArgumentException("ExposureTimeLimitMs must be finite.");
         }
     }
 
@@ -231,39 +317,98 @@ namespace DDR4_TestingApp
         public ulong IncorrectBits;
         public ulong ProcessedBits;   // only populated for Write records
 
-        /// <summary>Runs of k adjacent flipped bits; 8 entries. Null if absent.</summary>
+        /// <summary>
+        /// Runs of k adjacent flipped bits; 8 entries. The engine now initializes this
+        /// to Some([0; 8]) for EVERY record type, so null means "an older record from
+        /// before that change", not "not applicable" — an all-zero array on a Read or
+        /// Expose record means the field was simply never touched.
+        /// </summary>
         public ulong[]? AdjErrBins;
-        /// <summary>Bytes with exactly k flipped bits; 9 entries. Null if absent.</summary>
+
+        /// <summary>Bytes with exactly k flipped bits; 9 entries. Same caveat as AdjErrBins.</summary>
         public ulong[]? ErrBins;
 
+        /// <summary>Seconds from beam capture to SEFI, Dynamic records only.</summary>
         public double? TimeToSefi;
+
+        /// <summary>
+        /// Accumulated beam-present time in SECONDS. Only the Expose arm maintains this.
+        /// </summary>
         public double? ExposureTime;
 
-        // Time series. NOTE: the server does not push every series in every
-        // record type, so these can legitimately have DIFFERENT LENGTHS within
-        // one record. Zip them defensively.
+        // ---- Time series -------------------------------------------------------
+        //
+        // The server pushes a DIFFERENT SUBSET of these per record type and never pads,
+        // so within one record they legitimately have different lengths. Zip them
+        // defensively — never index one by another's Length.
+        //
+        // The Expose arm used to push log_beam_possible twice per tick, which left
+        // that one series at roughly double the length of the others and misaligned
+        // against log_timestamp. Fixed server-side, but records captured before the
+        // fix still carry it, so the defensive zipping above is still worth doing.
+
         public double[] LogTimestamp = Array.Empty<double>();
         public ulong[] LogBitsProcessed = Array.Empty<ulong>();
         public ulong[] LogBitsIncorrect = Array.Empty<ulong>();
         public ulong[] LogBitsCorrect = Array.Empty<ulong>();
         public double[] LogErrorRate = Array.Empty<double>();   // never written by the server yet
         public uint[] LogCurrentAddress = Array.Empty<uint>();
-        public bool[] LogBeamSignal = Array.Empty<bool>();
+
+        /// <summary>Beam on target (EMIO 78). Formerly the only beam series.</summary>
+        public bool[] LogBeamPresent = Array.Empty<bool>();
+
+        /// <summary>Facility reports beam is available (EMIO 79).</summary>
+        public bool[] LogBeamPossible = Array.Empty<bool>();
+
+        /// <summary>
+        /// What the server was ASKING for at each sample — the REQUEST_BEAM global that
+        /// also drives the clamp output. Reading this against LogBeamPresent is how you
+        /// tell "we asked and got it" from "we asked and waited". CMD_CLAMPCMD now
+        /// writes the same global, so a manual clamp shows up in this series too.
+        /// </summary>
+        public bool[] LogBeamRequest = Array.Empty<bool>();
+
         public bool[] LogSefiDetected = Array.Empty<bool>();
         public ulong[][] LogAdjErrBins = Array.Empty<ulong[]>();
         public ulong[][] LogErrBins = Array.Empty<ulong[]>();
 
-        /// <summary>Shortest of the per-sample series, i.e. how many rows can be zipped safely.</summary>
-        public int SampleCount => new[]
+        /// <summary>
+        /// Compatibility alias for the pre-split <c>log_beam_signal</c>. The old single
+        /// series was beam-on-target, which is LogBeamPresent.
+        /// </summary>
+        public bool[] LogBeamSignal => LogBeamPresent;
+
+        /// <summary>
+        /// Shortest of the series this record actually populated, i.e. how many rows can
+        /// be zipped safely. Empty series are ignored so a Read record (no bit counts)
+        /// does not report zero.
+        /// </summary>
+        public int SampleCount
         {
-            LogTimestamp.Length,
-            LogBitsIncorrect.Length,
-            LogCurrentAddress.Length,
-            LogBeamSignal.Length,
-        }.Min();
+            get
+            {
+                int[] lengths =
+                {
+                    LogTimestamp.Length,
+                    LogBitsProcessed.Length,
+                    LogBitsIncorrect.Length,
+                    LogBitsCorrect.Length,
+                    LogCurrentAddress.Length,
+                    LogBeamPresent.Length,
+                    LogBeamRequest.Length,
+                    LogSefiDetected.Length,
+                };
+
+                int min = int.MaxValue;
+                foreach (int n in lengths)
+                    if (n > 0 && n < min) min = n;
+
+                return min == int.MaxValue ? 0 : min;
+            }
+        }
     }
 
-    /// <summary>run.rs Run. Sent by SAVERUN, returned by GETRUN.</summary>
+    /// <summary>run.rs Run. Sent by SAVERUN, returned by GETRUN. Unchanged this round.</summary>
     public sealed class Run
     {
         public ulong TimeStarted;
@@ -281,11 +426,6 @@ namespace DDR4_TestingApp
         public double AirGap;
         public string Description = "";
 
-        // One flat list per stage. This REPLACED the old seven-field layout
-        // (preverify/prewrite + the three Option-typed primary slots +
-        // postverify/postwrite), so there is no longer a single-slot primary write
-        // or verify, and no Option anywhere — a stage simply holds zero or more
-        // record ids, in the order they were attached.
         public List<ushort> PreliminaryRecords = new();
         public List<ushort> PrimaryRecords = new();
         public List<ushort> PostRecords = new();
@@ -302,20 +442,76 @@ namespace DDR4_TestingApp
         public ushort Rid;
     }
 
-    /// <summary>types.rs EngineStatusRsp.</summary>
+    /// <summary>
+    /// types.rs EngineStatusRsp.
+    ///
+    /// BREAKING CHANGE: this no longer carries the in-flight Record. The server sends
+    /// Option&lt;RecordType&gt; where it used to send Option&lt;Record&gt;, so a status
+    /// poll now tells you WHAT KIND of task is running and how far along it is, but not
+    /// which rid, and none of the counters.
+    ///
+    /// Upside: a poll is ~20 bytes instead of megabytes, so the old "poll at 1 Hz, not
+    /// 10 Hz" warning no longer applies. Downside: to know the rid of the running task
+    /// you have to remember what you queued — the queue only lists work that has NOT
+    /// started, since the engine removes the entry before it begins.
+    /// </summary>
     public sealed class EngineStatus
     {
-        /// <summary>
-        /// Snapshot of the in-flight record, or null when idle. This carries the
-        /// full log arrays, so a long run makes every status poll expensive.
-        /// </summary>
-        public Record? ActiveRecord;
+        /// <summary>Kind of task in flight, or null when nothing is running.</summary>
+        public RecordType? CurrentRequestType;
 
-        /// <summary>Percent, 0..100. Sawtooths on Dynamic runs (one ramp per sweep).</summary>
+        /// <summary>
+        /// Progress, 0..100 for Read / Verify / Write / Dynamic (block index over
+        /// num_blocks, so it sawtooths on Dynamic — one ramp per sweep).
+        ///
+        /// MEANINGLESS ON AN EXPOSE RECORD. That arm reports
+        /// <c>exposure_time / exposure_time_limit_ms</c> — seconds divided by
+        /// milliseconds, so it comes out 1000x smaller than the fraction it is meant to
+        /// be — and a flat 0.5 when no limit is configured. The two cases are not
+        /// distinguishable from the wire, so <see cref="NormalizedProgress"/> reports
+        /// Expose as unknown rather than guessing. Use the raw value only if you know
+        /// which case you are in.
+        ///
+        /// The server-side fix is one line: make that arm emit
+        /// <c>exposure_time * 1000.0 / exposure_time_limit_ms * 100.0</c>, matching the
+        /// percentage every other arm reports. Once it does, drop the Expose arm from
+        /// NormalizedProgress and this all becomes uniform.
+        /// </summary>
         public double RecordProgress;
 
         public bool IsIdle;
+
+        /// <summary>Tasks that have NOT started yet. The running task is not in here.</summary>
         public TaskRequest[] Queue = Array.Empty<TaskRequest>();
+
+        /// <summary>
+        /// Progress normalized to 0..1, or null when the engine is idle OR when the
+        /// running task reports progress that cannot be interpreted.
+        ///
+        /// Expose falls in the second case — see <see cref="RecordProgress"/> for why.
+        /// A caller should treat null-while-busy as "indeterminate" (a marquee bar, or
+        /// elapsed time from the record) rather than as zero; use
+        /// <see cref="IsProgressKnown"/> to tell the two nulls apart.
+        /// </summary>
+        public double? NormalizedProgress
+        {
+            get
+            {
+                if (CurrentRequestType is not RecordType type) return null;
+                if (type == RecordType.Expose) return null;
+
+                double raw = RecordProgress / 100.0;
+                if (double.IsNaN(raw)) return 0.0;
+                return Math.Max(0.0, Math.Min(1.0, raw));
+            }
+        }
+
+        /// <summary>
+        /// True when a task is running AND its progress number means something. False
+        /// while idle, and false during an Expose task, whose progress is unusable.
+        /// </summary>
+        public bool IsProgressKnown =>
+            CurrentRequestType.HasValue && CurrentRequestType != RecordType.Expose;
 
         /// <summary>
         /// True when the engine claims to be idle but still has work queued. The
@@ -327,7 +523,7 @@ namespace DDR4_TestingApp
     }
 
     /// <summary>
-    /// types.rs InfoRsp — the read-only EMIO lines from gpio.rs.
+    /// types.rs InfoRsp — the read-only EMIO lines from gpio.rs, plus one heartbeat.
     ///
     /// FIELD ORDER IS THE WIRE ORDER. bincode serializes in struct DECLARATION
     /// order, so this must mirror types.rs exactly. Note that commands.rs builds the
@@ -340,19 +536,29 @@ namespace DDR4_TestingApp
         /// <summary>Beam is available at the facility (EMIO 79).</summary>
         public bool BeamPossible;
 
-        /// <summary>Beam is on target right now (EMIO 78). This replaced BeamSignal.</summary>
+        /// <summary>Beam is on target right now (EMIO 78).</summary>
         public bool BeamActive;
 
         /// <summary>
-        /// The server has heard a GETPOWERMODE request recently. This is a HEARTBEAT,
-        /// not a hardware line: the server stamps a timestamp every time
-        /// <see cref="GetPowerModeAsync"/> is called and reports whether that stamp is
-        /// fresh. If nothing polls GETPOWERMODE, this reads false — meaning "no
-        /// external power controller is listening", which is the point.
+        /// The server has heard a GETPOWERMODE request within the last 250 ms. This is a
+        /// HEARTBEAT, not a hardware line: the server stamps the time of every
+        /// GETPOWERMODE and reports whether that stamp is fresh, so it means "something
+        /// is supervising my power right now".
+        ///
+        /// The 250 ms window is the thing to design around. Whatever drives the
+        /// contactor has to poll <see cref="TcpManager.GetPowerModeAsync"/> FASTER than
+        /// that or this reads false even though the controller is alive and connected —
+        /// a 500 ms cadence flickers, and a 1 s cadence never shows true at all. The
+        /// Launcher polls at 150 ms for exactly this reason.
+        ///
+        /// An earlier build computed the freshness test backwards and latched true from
+        /// the first call onward; if this reads permanently true on an old server, that
+        /// is why.
         /// </summary>
         public bool PowerServicesProvided;
 
-        /// <summary>DDR4 controller has finished calibrating (EMIO 80).</summary>
+        /// <summary>DDR4 controller has finished calibrating (EMIO 80). The engine
+        /// refuses to start any task while this reads low.</summary>
         public bool ControllerCalibrated;
 
         /// <summary>UI clock alive (EMIO 81).</summary>
@@ -365,9 +571,10 @@ namespace DDR4_TestingApp
         public bool FpgaLoaded;
 
         /// <summary>
-        /// State of the clamp-request OUTPUT line the server drives. Unlike every
-        /// other field here this reflects something the ZCU is asserting, not
-        /// something it is sensing, so it reads back whatever was last commanded.
+        /// State of the clamp-request OUTPUT line the server drives (EMIO 88). Unlike
+        /// every other field here this reflects something the ZCU is asserting, not
+        /// something it is sensing, so it reads back whatever was last commanded —
+        /// by the engine via set_beam_request, or by CMD_CLAMPCMD.
         /// </summary>
         public bool ClampRequest;
 
@@ -376,6 +583,9 @@ namespace DDR4_TestingApp
         public bool Sdram1;
         public bool Sdram2;
         public bool Sdram3;
+
+        /// <summary>Alias matching the server's gpio::get_beam_present naming.</summary>
+        public bool BeamPresent => BeamActive;
 
         /// <summary>The four select lines as an array, index 0-3.</summary>
         public bool[] SdramSelects => new[] { Sdram0, Sdram1, Sdram2, Sdram3 };
@@ -403,13 +613,26 @@ namespace DDR4_TestingApp
     }
 
     /// <summary>
-    /// types.rs GetPowerModeRsp. Both flags stay false unless the server has
-    /// entered safe mode (/dvr unmounted) AND a power change was requested.
+    /// types.rs GetPowerModeRsp. Gained a third field this round.
+    ///
+    /// The two power flags stay false unless the server has entered safe mode
+    /// (/dvr unmounted) AND a power change was requested. RequestBeam is NOT gated on
+    /// safe mode — it is reported every poll.
     /// </summary>
     public struct PowerMode
     {
         public bool RequestPoweroff;
         public bool RequestReboot;
+
+        /// <summary>
+        /// NEW. The server's REQUEST_BEAM global: true while the engine wants beam on
+        /// target. The same flag drives the clamp output and is logged per sample in
+        /// <see cref="Record.LogBeamRequest"/>.
+        /// </summary>
+        public bool RequestBeam;
+
+        /// <summary>True if the server wants the operator to cycle power either way.</summary>
+        public bool WantsPowerChange => RequestPoweroff || RequestReboot;
     }
 
     /// <summary>One row of the LISTRECORDS column arrays.</summary>
@@ -492,11 +715,14 @@ namespace DDR4_TestingApp
             return (int)n;
         }
 
+        /// <summary>Accepts 0..4. Expose is variant 4.</summary>
         public RecordType ReadRecordType()
         {
             uint v = ReadU32();
-            if (v > 3)
-                throw new InvalidDataException($"unknown RecordType variant {v}");
+            if (v > 4)
+                throw new InvalidDataException(
+                    $"unknown RecordType variant {v} — record.rs has gained a variant this " +
+                    "client does not know about");
             return (RecordType)v;
         }
 
@@ -521,6 +747,7 @@ namespace DDR4_TestingApp
         public double? ReadOptionF64() => ReadSomeTag() ? ReadF64() : null;
         public ushort? ReadOptionU16() => ReadSomeTag() ? ReadU16() : null;
         public string? ReadOptionString() => ReadSomeTag() ? ReadString() : null;
+        public RecordType? ReadOptionRecordType() => ReadSomeTag() ? ReadRecordType() : null;
 
         public ulong[] ReadFixedU64Array(int n)
         {
@@ -721,14 +948,16 @@ namespace DDR4_TestingApp
         private const byte CMD_DELRECORD = 0x15;
         private const byte CMD_GETFPGAIMAGES = 0x16;
         private const byte CMD_REQUESTPOWERSTATE = 0x17;
+        private const byte CMD_CLAMPCMD = 0x18;
+        private const byte CMD_EXPOSE = 0x19;                // NEW
 
         /// <summary>Frame header: SYNC(4) + CMD(1) + LEN(4).</summary>
         private const int HeaderSize = 9;
 
         /// <summary>
-        /// Mirrors the server's MAX_PAYLOAD (server.rs), which is now enforced: the
-        /// server logs the length and DROPS THE CONNECTION on anything larger, with no
-        /// reply. Fail locally instead so the link survives.
+        /// Mirrors the server's MAX_PAYLOAD (server.rs), which is enforced: the server
+        /// logs the length and DROPS THE CONNECTION on anything larger, with no reply.
+        /// Fail locally instead so the link survives.
         /// </summary>
         public const int MaxOutboundPayload = 1 << 20;   // 1 MiB
 
@@ -803,8 +1032,6 @@ namespace DDR4_TestingApp
             Host = host;
             Port = port;
 
-            // (The old client reset Info._infoFetchInProgress here. Re-add that
-            //  line if your Info screen still depends on it.)
             StatusChanged?.Invoke(ConnectionStatus.Connected);
         }
 
@@ -897,16 +1124,15 @@ namespace DDR4_TestingApp
             SendOnlyAsync(CMD_READ, EncodeU16(rid), ct);
 
         /// <summary>
-        /// Queue a dynamic task. Unlike the other three, DynamicCmd now carries more
-        /// than a rid — 7 bytes rather than 2 — so a rid alone is no longer a valid
-        /// payload and an old client silently desyncs the frame.
+        /// Queue a dynamic task. Unlike the other three, DynamicCmd carries more than a
+        /// rid — 7 bytes rather than 2 — so a rid alone is not a valid payload.
         /// </summary>
         /// <param name="autoRebootOnSefi">
-        /// Ask the engine to request a power cycle when a SEFI is detected. Something
-        /// has to be polling GETPOWERMODE and driving a contactor for that to do
-        /// anything; with no power controller attached the board just parks.
+        /// Carried on the wire but NOT read by the engine: the reboot-after-SEFI
+        /// decision is taken from CONFIG.automated_sefi_mode, not from this flag. Set
+        /// AutomatedSefiMode in the config if you want that behaviour.
         /// </param>
-        /// <param name="numberOfTrials">How many dynamic passes to run.</param>
+        /// <param name="numberOfTrials">Carried on the wire; the engine ignores it too.</param>
         /// <param name="parentRun">Run id this record belongs to, 0 for none.</param>
         public static Task QueueDynamicAsync(
             ushort rid,
@@ -926,7 +1152,40 @@ namespace DDR4_TestingApp
         }
 
         /// <summary>
-        /// Queue any task type. The dynamic parameters are ignored for the other three.
+        /// Queue a beam-exposure task (CMD_EXPOSE, 0x19). No reply, like the rest.
+        ///
+        /// The engine touches no memory for this one. It waits for beam-possible to
+        /// hold high for 200 ms, asserts the beam request, tallies beam-present time
+        /// into <see cref="Record.ExposureTime"/>, and ends 200 ms after either
+        /// beam-possible drops or the configured exposure limit is passed.
+        ///
+        /// TWO WAYS THIS TASK SITS FOREVER, both worth checking before you queue it:
+        ///
+        /// 1. BEAM-POSSIBLE NEVER GOES HIGH. The arm only asserts the request after
+        ///    beam-possible has held, and only exits once it has dropped *while the
+        ///    request is asserted* — so with the facility line low from the start,
+        ///    neither condition is ever met and the engine spins in this task with the
+        ///    whole queue stalled behind it. Only <see cref="AbortAsync"/> gets it out.
+        ///    Check <see cref="InfoRsp.BeamPossible"/> first.
+        ///
+        /// 2. THE CLAMP WAS ALREADY ASSERTED. The exit test is "beam-possible has been
+        ///    low for 200 ms AND we are requesting beam". If REQUEST_BEAM is already
+        ///    true when the task starts — which a prior <see cref="SetClampAsync"/>(true)
+        ///    now causes, since CMD_CLAMPCMD writes that global — and beam-possible is
+        ///    low, the exit fires on the first iteration and the record completes about
+        ///    200 ms later with essentially zero exposure. Check
+        ///    <see cref="PowerMode.RequestBeam"/> or <see cref="InfoRsp.ClampRequest"/>,
+        ///    or just call SetClampAsync(false) first.
+        ///
+        /// With no exposure limit configured the task runs until the facility drops
+        /// beam-possible, which is the intended mode for "expose until the run ends".
+        /// Set ConfigCmd.ExposureTimeLimitEnabled for a bounded exposure.
+        /// </summary>
+        public static Task QueueExposeAsync(ushort rid, CancellationToken ct = default) =>
+            SendOnlyAsync(CMD_EXPOSE, EncodeU16(rid), ct);
+
+        /// <summary>
+        /// Queue any task type. The dynamic parameters are ignored for the other four.
         /// </summary>
         public static Task QueueTaskAsync(
             RecordType type,
@@ -942,6 +1201,7 @@ namespace DDR4_TestingApp
                 RecordType.Read => QueueReadAsync(rid, ct),
                 RecordType.Dynamic =>
                     QueueDynamicAsync(rid, autoRebootOnSefi, numberOfTrials, parentRun, ct),
+                RecordType.Expose => QueueExposeAsync(rid, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(type)),
             };
 
@@ -953,12 +1213,38 @@ namespace DDR4_TestingApp
         public static Task AbortAsync(CancellationToken ct = default) =>
             SendOnlyAsync(CMD_ABORT, Array.Empty<byte>(), ct);
 
+        // ============================== Clamp / beam request ==============================
+
+        /// <summary>
+        /// Drive the beam request (CMD_CLAMPCMD, 0x18). Send-only — no reply.
+        ///
+        /// This now goes through the server's set_beam_request(), so it moves the
+        /// REQUEST_BEAM global as well as the EMIO clamp line. Everything that reads
+        /// that global follows: <see cref="PowerMode.RequestBeam"/>,
+        /// <see cref="InfoRsp.ClampRequest"/>, and Record.LogBeamRequest on any task
+        /// recording at the time. It used to poke the GPIO directly and leave the global
+        /// stale, and used to panic the handler thread (dropping the connection) if the
+        /// GPIO write failed; neither is true any more.
+        ///
+        /// Two things still worth knowing:
+        ///
+        /// * A running Expose or Dynamic task owns this flag and re-evaluates it every
+        ///   progress tick, so a manual change made mid-task is overwritten within
+        ///   ~200 ms. Use it between tasks, or for bench checks.
+        ///
+        /// * Leaving it asserted changes how the NEXT Expose task behaves — see
+        ///   <see cref="QueueExposeAsync"/>, case 2. Assert false before queueing one.
+        /// </summary>
+        public static Task SetClampAsync(bool assert, CancellationToken ct = default) =>
+            SendOnlyAsync(CMD_CLAMPCMD, new BincodeWriter().Bool(assert).ToArray(), ct);
+
         // ============================== Engine status ==============================
 
         /// <summary>
-        /// Poll the engine. Beware: the reply embeds the entire in-flight Record,
-        /// including every log array, so on a long run each poll moves megabytes.
-        /// Poll at 1 Hz, not 10 Hz.
+        /// Poll the engine. Cheap now — the reply is the task KIND, a progress number,
+        /// the idle flag and the pending queue, roughly twenty bytes plus six per queued
+        /// task. No record payload any more, so a 10 Hz poll is affordable if you want
+        /// one.
         /// </summary>
         public static Task<EngineStatus> GetEngineStatusAsync(CancellationToken ct = default) =>
             RunAsync(async t =>
@@ -968,7 +1254,7 @@ namespace DDR4_TestingApp
                 var r = new BincodeReader(p);
                 var st = new EngineStatus
                 {
-                    ActiveRecord = r.ReadSomeTag() ? DecodeRecord(r) : null,
+                    CurrentRequestType = r.ReadOptionRecordType(),
                     RecordProgress = r.ReadF64(),
                     IsIdle = r.ReadBool(),
                     Queue = r.ReadVecTaskRequest(),
@@ -981,14 +1267,16 @@ namespace DDR4_TestingApp
         /// Queue a task and wait for its Record to appear in the archive, reporting
         /// engine status to <paramref name="progress"/> along the way.
         ///
-        /// Completion is detected by the record appearing in LISTRECORDS rather than
-        /// by <c>IsIdle</c> alone: the engine does not clear IsIdle until it has
-        /// dequeued, so a naive idle check returns "done" immediately after queueing.
-        ///
         /// This can wait indefinitely — the engine refuses to start while /dvr is in
         /// safe mode or the MIG calibration line is low, and says nothing about it.
         /// Watch <see cref="EngineStatus.IsStalled"/> and always pass a cancellation
         /// token.
+        ///
+        /// For <see cref="RecordType.Expose"/> the indefinite case is the NORMAL one:
+        /// with no exposure limit configured the task runs until the facility drops
+        /// beam-possible, and the two failure modes in
+        /// <see cref="QueueExposeAsync"/> never finish at all. Progress reporting is
+        /// also unusable there — see <see cref="EngineStatus.RecordProgress"/>.
         /// </summary>
         public static async Task<Record?> RunTaskAsync(
             RecordType type,
@@ -997,13 +1285,18 @@ namespace DDR4_TestingApp
             TimeSpan? pollInterval = null,
             CancellationToken ct = default)
         {
-            await QueueTaskAsync(type, rid, false, 0, 0, ct).ConfigureAwait(false);
+            await QueueTaskAsync(type, rid, false, 1, 0, ct).ConfigureAwait(false);
             return await WaitForRecordAsync(rid, progress, pollInterval, ct).ConfigureAwait(false);
         }
 
         /// <summary>
         /// Wait until record <paramref name="rid"/> has been archived, then return it.
-        /// See <see cref="RunTaskAsync"/> for the completion-detection caveats.
+        ///
+        /// Completion is detected from LISTRECORDS, not from the engine status. That is
+        /// now the only option: the status reply no longer names the running record, so
+        /// a task that has been dequeued but not yet archived is indistinguishable from
+        /// one that never existed. The archive is the authority — records land there on
+        /// completion or abort and nowhere else.
         /// </summary>
         public static async Task<Record?> WaitForRecordAsync(
             ushort rid,
@@ -1020,13 +1313,11 @@ namespace DDR4_TestingApp
                 var status = await GetEngineStatusAsync(ct).ConfigureAwait(false);
                 progress?.Report(status);
 
-                bool inFlight = status.ActiveRecord?.Rid == rid
-                                || status.Queue.Any(q => q.Rid == rid);
+                // Still waiting its turn — no point asking the archive.
+                bool queued = status.Queue.Any(q => q.Rid == rid);
 
-                if (!inFlight)
+                if (!queued)
                 {
-                    // Either it finished, or it has not started yet. The archive is
-                    // the authority — records only land there on completion or abort.
                     var summaries = await ListRecordsAsync(ct).ConfigureAwait(false);
                     if (summaries.Any(s => s.Rid == rid))
                         return await GetRecordAsync(rid, ct).ConfigureAwait(false);
@@ -1099,7 +1390,7 @@ namespace DDR4_TestingApp
                 bool ok = r.ReadBool();
                 r.ExpectEnd("DeleteRecordRsp");
                 return ok;
-            }, DefaultTimeout, ct);
+            }, DeleteTimeout, ct);
 
         // ============================== Runs ==============================
 
@@ -1172,17 +1463,8 @@ namespace DDR4_TestingApp
         /// <summary>
         /// Delete a run, every record it references, and those records' captures.
         /// Returns false if the server has no such id, or if any file could not be
-        /// removed — note the run entry is dropped even when a child unlink failed, so
-        /// false can mean "mostly deleted". Re-list afterwards rather than assuming.
-        ///
-        /// Unlike <see cref="DeleteRecordAsync"/>, this does NOT check whether a
-        /// referenced record is currently running: the server unlinks child captures by
-        /// id straight from the run's record lists. Deleting a run whose record is still
-        /// in flight destroys that capture while the engine is writing it. Check
-        /// <see cref="GetEngineStatusAsync"/> first.
-        ///
-        /// Takes longer than a normal command: the server holds its record lock while
-        /// unlinking every child capture, which can be hundreds of megabytes each.
+        /// removed. Allow a long timeout: the server unlinks every child capture, which
+        /// can be hundreds of megabytes each.
         /// </summary>
         public static Task<bool> DeleteRunAsync(ushort id, CancellationToken ct = default) =>
             RunAsync(async t =>
@@ -1200,7 +1482,8 @@ namespace DDR4_TestingApp
         /// <summary>
         /// Stream the capture for <paramref name="rid"/> into <paramref name="destination"/>
         /// and return the number of bytes written. Returns 0 when the server has no such
-        /// capture, or when /dvr is unmounted (safe mode).
+        /// capture, when /dvr is unmounted (safe mode), or for an Expose record — the
+        /// engine creates the file for every task but the Expose arm writes nothing to it.
         ///
         /// Contents depend on the record type: a Read capture holds the raw bytes read
         /// back; Verify and Dynamic captures hold (actual XOR expected) per byte, so a
@@ -1375,13 +1658,16 @@ namespace DDR4_TestingApp
             }, DefaultTimeout, ct);
 
         /// <summary>
-        /// Ask whether the server wants to be powered down or rebooted. Both flags stay
-        /// false until the server has unmounted /dvr and entered safe mode. The server
-        /// does not reboot itself — acting on this is the operator's job.
+        /// Ask whether the server wants to be powered down or rebooted, and whether it
+        /// currently wants beam. The two power flags stay false until the server has
+        /// unmounted /dvr and entered safe mode; RequestBeam is reported unconditionally.
+        /// The server does not reboot itself — acting on this is the operator's job.
         ///
         /// Calling this also serves as a HEARTBEAT: the server stamps the time of every
-        /// request and reports it back through InfoRsp.PowerServicesProvided, so a UI
-        /// that never polls this reads as "no power controller attached".
+        /// request and reports through InfoRsp.PowerServicesProvided whether that stamp
+        /// is under 250 ms old. Whatever drives the contactor therefore has to poll this
+        /// faster than every 250 ms, or the ZCU reports that nothing is supervising its
+        /// power even while this client is connected and polling.
         /// </summary>
         public static Task<PowerMode> GetPowerModeAsync(CancellationToken ct = default) =>
             RunAsync(async t =>
@@ -1393,6 +1679,7 @@ namespace DDR4_TestingApp
                 {
                     RequestPoweroff = r.ReadBool(),
                     RequestReboot = r.ReadBool(),
+                    RequestBeam = r.ReadBool(),      // NEW, third field
                 };
                 r.ExpectEnd("GetPowerModeRsp");
                 return pm;
@@ -1586,7 +1873,9 @@ namespace DDR4_TestingApp
                 .Bool(c.IsX16)
                 .U8(c.EnabledByteLanes)
                 .Bool(c.FpgaAutoConfig)
-                .Bool(c.AutomatedSefiMode);
+                .Bool(c.AutomatedSefiMode)
+                .Bool(c.ExposureTimeLimitEnabled)
+                .F64(c.ExposureTimeLimitMs);
 
             var bytes = w.ToArray();
             if (bytes.Length != ConfigCmd.WireSize)
@@ -1626,6 +1915,10 @@ namespace DDR4_TestingApp
         // in source order, which the language guarantees. The reader is a CURSOR, so
         // reordering a line here silently decodes the wrong bytes rather than failing
         // to compile. Keep the order identical to record.rs / run.rs.
+        //
+        // The three beam series are PRESENT, POSSIBLE, REQUEST in that order — not
+        // alphabetical, and not the order task_engine.rs pushes them in (which is
+        // possible, present, request). record.rs declaration order is what counts.
         private static Record DecodeRecord(BincodeReader r) => new Record
         {
             TimeStarted = r.ReadU64(),
@@ -1648,7 +1941,9 @@ namespace DDR4_TestingApp
             LogBitsCorrect = r.ReadVecU64(),
             LogErrorRate = r.ReadVecF64(),
             LogCurrentAddress = r.ReadVecU32(),
-            LogBeamSignal = r.ReadVecBool(),
+            LogBeamPresent = r.ReadVecBool(),
+            LogBeamPossible = r.ReadVecBool(),
+            LogBeamRequest = r.ReadVecBool(),
             LogSefiDetected = r.ReadVecBool(),
             LogAdjErrBins = r.ReadVecFixedU64Array(8),
             LogErrBins = r.ReadVecFixedU64Array(9),

@@ -47,6 +47,8 @@ namespace DDR4_TestingApp
             EnabledByteLanes = 0xFF,
             FpgaAutoConfig = false,
             AutomatedSefiMode = false,
+            ExposureTimeLimitEnabled = false,
+            ExposureTimeLimitMs = 0.0,
         };
 
         /// <summary>Raised after any property changes, with the new value.</summary>
@@ -153,6 +155,42 @@ namespace DDR4_TestingApp
         {
             get => current.AutomatedSefiMode;
             set => Set(ref current.AutomatedSefiMode, value);
+        }
+
+        /// <summary>
+        /// Bound the beam-exposure task. With this clear an Expose record runs until
+        /// the facility drops beam-possible, which is the intended "expose for the
+        /// whole run" mode.
+        /// </summary>
+        public static bool ExposureTimeLimitEnabled
+        {
+            get => current.ExposureTimeLimitEnabled;
+            set => Set(ref current.ExposureTimeLimitEnabled, value);
+        }
+
+        /// <summary>
+        /// Exposure cap in MILLISECONDS. The engine ends the record once
+        /// <c>exposure_time_limit_ms &lt;= exposure_time * 1000</c>, where exposure_time
+        /// is accumulated beam-present time in seconds.
+        ///
+        /// Only beam-present time counts, so a limit of 30000 means thirty seconds of
+        /// actual beam on target, not thirty seconds of wall clock. A run that spends
+        /// half its time waiting between spills takes about a minute to reach it.
+        ///
+        /// An earlier server build compared this against raw SECONDS. A config.bin
+        /// written against that build caps exposure 1000x too early here.
+        /// </summary>
+        public static double ExposureTimeLimitMs
+        {
+            get => current.ExposureTimeLimitMs;
+            set => Set(ref current.ExposureTimeLimitMs, value < 0.0 ? 0.0 : value);
+        }
+
+        /// <summary>The same cap in seconds, for call sites that think in seconds.</summary>
+        public static double ExposureTimeLimitSeconds
+        {
+            get => current.ExposureTimeLimitMs / 1000.0;
+            set => ExposureTimeLimitMs = value * 1000.0;
         }
 
         // ============================== Bulk access ==============================
@@ -290,6 +328,16 @@ namespace DDR4_TestingApp
                 w.Add("Automated SEFI mode will unmount /dvr and park the engine when the " +
                       "dynamic run ends; the server cannot reboot itself.");
 
+            if (current.ExposureTimeLimitEnabled)
+                w.Add($"Exposure tasks stop after {current.ExposureTimeLimitMs:0.##} ms " +
+                      $"({current.ExposureTimeLimitMs / 1000.0:0.##} s) of BEAM-PRESENT time, " +
+                      "not wall clock — a run with gaps between spills takes longer than that " +
+                      "to finish.");
+
+            // Deliberately no warning for the limit being OFF. Running until the
+            // facility drops beam-possible is the normal mode, and most configurations
+            // never queue an Expose task at all, so flagging it every time is noise.
+
             return w;
         }
 
@@ -401,7 +449,11 @@ namespace DDR4_TestingApp
             && a.IsX16 == b.IsX16
             && a.EnabledByteLanes == b.EnabledByteLanes
             && a.FpgaAutoConfig == b.FpgaAutoConfig
-            && a.AutomatedSefiMode == b.AutomatedSefiMode;
+            && a.AutomatedSefiMode == b.AutomatedSefiMode
+            // Omitting these two made IsDirty report IN SYNC after an exposure-limit
+            // edit, so the sync pill stayed green and the change was never pushed.
+            && a.ExposureTimeLimitEnabled == b.ExposureTimeLimitEnabled
+            && a.ExposureTimeLimitMs.Equals(b.ExposureTimeLimitMs);
     }
 
     internal static class ConfigCmdExtensions

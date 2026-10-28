@@ -71,8 +71,8 @@
             powerStatus = new Button();
             groupBox13 = new GroupBox();
             groupBox15 = new GroupBox();
-            relayID = new NumericUpDown();
-            invertRelay = new CheckBox();
+            relayID_power = new NumericUpDown();
+            invertRelay_power = new CheckBox();
             groupBox14 = new GroupBox();
             restartDelay = new NumericUpDown();
             groupBox12 = new GroupBox();
@@ -91,8 +91,19 @@
             sdram1 = new Button();
             sdram0 = new Button();
             groupBox20 = new GroupBox();
-            requestReboot = new Button();
             requestOff = new Button();
+            requestReboot = new Button();
+            groupBox21 = new GroupBox();
+            groupBox24 = new GroupBox();
+            beamRequestStatus = new Button();
+            beamRelayStatus = new Button();
+            groupBox23 = new GroupBox();
+            relayID_beam = new NumericUpDown();
+            invertRelay_beam = new CheckBox();
+            groupBox22 = new GroupBox();
+            beamOn = new Button();
+            beamAUTO = new Button();
+            beamOFF = new Button();
             groupBox1.SuspendLayout();
             groupBox17.SuspendLayout();
             groupBox4.SuspendLayout();
@@ -111,7 +122,7 @@
             groupBox16.SuspendLayout();
             groupBox13.SuspendLayout();
             groupBox15.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)relayID).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)relayID_power).BeginInit();
             groupBox14.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)restartDelay).BeginInit();
             groupBox12.SuspendLayout();
@@ -119,6 +130,11 @@
             groupBox18.SuspendLayout();
             groupBox19.SuspendLayout();
             groupBox20.SuspendLayout();
+            groupBox21.SuspendLayout();
+            groupBox24.SuspendLayout();
+            groupBox23.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)relayID_beam).BeginInit();
+            groupBox22.SuspendLayout();
             SuspendLayout();
             // 
             // groupBox1
@@ -208,9 +224,9 @@
             groupBox3.Controls.Add(pictureBox1);
             groupBox3.Controls.Add(label19);
             groupBox3.Controls.Add(label3);
-            groupBox3.Location = new Point(527, 302);
+            groupBox3.Location = new Point(527, 386);
             groupBox3.Name = "groupBox3";
-            groupBox3.Size = new Size(408, 198);
+            groupBox3.Size = new Size(408, 114);
             groupBox3.TabIndex = 2;
             groupBox3.TabStop = false;
             groupBox3.Text = "About";
@@ -218,7 +234,7 @@
             // label12
             // 
             label12.AutoSize = true;
-            label12.Location = new Point(108, 85);
+            label12.Location = new Point(243, 85);
             label12.Name = "label12";
             label12.Size = new Size(113, 15);
             label12.TabIndex = 12;
@@ -227,9 +243,9 @@
             // pictureBox3
             // 
             pictureBox3.Image = (Image)resources.GetObject("pictureBox3.Image");
-            pictureBox3.Location = new Point(315, 104);
+            pictureBox3.Location = new Point(316, 16);
             pictureBox3.Name = "pictureBox3";
-            pictureBox3.Size = new Size(87, 88);
+            pictureBox3.Size = new Size(48, 44);
             pictureBox3.SizeMode = PictureBoxSizeMode.StretchImage;
             pictureBox3.TabIndex = 11;
             pictureBox3.TabStop = false;
@@ -237,9 +253,9 @@
             // pictureBox2
             // 
             pictureBox2.Image = (Image)resources.GetObject("pictureBox2.Image");
-            pictureBox2.Location = new Point(328, 16);
+            pictureBox2.Location = new Point(243, 16);
             pictureBox2.Name = "pictureBox2";
-            pictureBox2.Size = new Size(74, 81);
+            pictureBox2.Size = new Size(46, 48);
             pictureBox2.SizeMode = PictureBoxSizeMode.StretchImage;
             pictureBox2.TabIndex = 10;
             pictureBox2.TabStop = false;
@@ -247,9 +263,9 @@
             // pictureBox1
             // 
             pictureBox1.Image = (Image)resources.GetObject("pictureBox1.Image");
-            pictureBox1.Location = new Point(31, 113);
+            pictureBox1.Location = new Point(27, 53);
             pictureBox1.Name = "pictureBox1";
-            pictureBox1.Size = new Size(256, 79);
+            pictureBox1.Size = new Size(179, 51);
             pictureBox1.SizeMode = PictureBoxSizeMode.StretchImage;
             pictureBox1.TabIndex = 10;
             pictureBox1.TabStop = false;
@@ -257,17 +273,18 @@
             // label19
             // 
             label19.AutoSize = true;
-            label19.Location = new Point(102, 62);
+            label19.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            label19.Location = new Point(269, 67);
             label19.Name = "label19";
-            label19.Size = new Size(125, 15);
+            label19.Size = new Size(70, 15);
             label19.TabIndex = 9;
-            label19.Text = "Written by Ryan Lopez";
+            label19.Text = "Ryan Lopez";
             // 
             // label3
             // 
             label3.AutoSize = true;
             label3.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label3.Location = new Point(68, 27);
+            label3.Location = new Point(20, 23);
             label3.Name = "label3";
             label3.Size = new Size(193, 21);
             label3.TabIndex = 8;
@@ -445,9 +462,9 @@
             groupBox9.Controls.Add(plStatus);
             groupBox9.Controls.Add(uiStatus);
             groupBox9.Controls.Add(calbStatus);
-            groupBox9.Location = new Point(584, 132);
+            groupBox9.Location = new Point(527, 303);
             groupBox9.Name = "groupBox9";
-            groupBox9.Size = new Size(230, 164);
+            groupBox9.Size = new Size(406, 77);
             groupBox9.TabIndex = 19;
             groupBox9.TabStop = false;
             groupBox9.Text = "System Status";
@@ -455,9 +472,9 @@
             // psStatus
             // 
             psStatus.Enabled = false;
-            psStatus.Location = new Point(149, 91);
+            psStatus.Location = new Point(334, 18);
             psStatus.Name = "psStatus";
-            psStatus.Size = new Size(66, 63);
+            psStatus.Size = new Size(66, 47);
             psStatus.TabIndex = 6;
             psStatus.Text = "POWER SERVICES";
             psStatus.UseVisualStyleBackColor = true;
@@ -465,9 +482,9 @@
             // fpgaStatus
             // 
             fpgaStatus.Enabled = false;
-            fpgaStatus.Location = new Point(149, 22);
+            fpgaStatus.Location = new Point(266, 18);
             fpgaStatus.Name = "fpgaStatus";
-            fpgaStatus.Size = new Size(66, 63);
+            fpgaStatus.Size = new Size(66, 46);
             fpgaStatus.TabIndex = 5;
             fpgaStatus.Text = "FPGA READY";
             fpgaStatus.UseVisualStyleBackColor = true;
@@ -475,9 +492,9 @@
             // plStatus
             // 
             plStatus.Enabled = false;
-            plStatus.Location = new Point(77, 91);
+            plStatus.Location = new Point(198, 18);
             plStatus.Name = "plStatus";
-            plStatus.Size = new Size(66, 63);
+            plStatus.Size = new Size(66, 47);
             plStatus.TabIndex = 4;
             plStatus.Text = "PL";
             plStatus.UseVisualStyleBackColor = true;
@@ -485,9 +502,9 @@
             // uiStatus
             // 
             uiStatus.Enabled = false;
-            uiStatus.Location = new Point(6, 91);
+            uiStatus.Location = new Point(127, 18);
             uiStatus.Name = "uiStatus";
-            uiStatus.Size = new Size(66, 63);
+            uiStatus.Size = new Size(66, 47);
             uiStatus.TabIndex = 3;
             uiStatus.Text = "UI";
             uiStatus.UseVisualStyleBackColor = true;
@@ -495,9 +512,9 @@
             // calbStatus
             // 
             calbStatus.Enabled = false;
-            calbStatus.Location = new Point(6, 22);
+            calbStatus.Location = new Point(6, 18);
             calbStatus.Name = "calbStatus";
-            calbStatus.Size = new Size(137, 63);
+            calbStatus.Size = new Size(115, 47);
             calbStatus.TabIndex = 0;
             calbStatus.Text = "CALIBRATED";
             calbStatus.UseVisualStyleBackColor = true;
@@ -546,12 +563,12 @@
             groupBox13.Size = new Size(283, 85);
             groupBox13.TabIndex = 20;
             groupBox13.TabStop = false;
-            groupBox13.Text = "Manual Override";
+            groupBox13.Text = "Contactor Relay";
             // 
             // groupBox15
             // 
-            groupBox15.Controls.Add(relayID);
-            groupBox15.Controls.Add(invertRelay);
+            groupBox15.Controls.Add(relayID_power);
+            groupBox15.Controls.Add(invertRelay_power);
             groupBox15.Location = new Point(122, 22);
             groupBox15.Name = "groupBox15";
             groupBox15.Size = new Size(155, 57);
@@ -559,22 +576,25 @@
             groupBox15.TabStop = false;
             groupBox15.Text = "Relay ID";
             // 
-            // relayID
+            // relayID_power
             // 
-            relayID.Location = new Point(14, 22);
-            relayID.Name = "relayID";
-            relayID.Size = new Size(72, 23);
-            relayID.TabIndex = 1;
+            relayID_power.Location = new Point(14, 22);
+            relayID_power.Maximum = new decimal(new int[] { 8, 0, 0, 0 });
+            relayID_power.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            relayID_power.Name = "relayID_power";
+            relayID_power.Size = new Size(72, 23);
+            relayID_power.TabIndex = 1;
+            relayID_power.Value = new decimal(new int[] { 1, 0, 0, 0 });
             // 
-            // invertRelay
+            // invertRelay_power
             // 
-            invertRelay.AutoSize = true;
-            invertRelay.Location = new Point(92, 23);
-            invertRelay.Name = "invertRelay";
-            invertRelay.Size = new Size(56, 19);
-            invertRelay.TabIndex = 0;
-            invertRelay.Text = "Invert";
-            invertRelay.UseVisualStyleBackColor = true;
+            invertRelay_power.AutoSize = true;
+            invertRelay_power.Location = new Point(92, 23);
+            invertRelay_power.Name = "invertRelay_power";
+            invertRelay_power.Size = new Size(56, 19);
+            invertRelay_power.TabIndex = 0;
+            invertRelay_power.Text = "Invert";
+            invertRelay_power.UseVisualStyleBackColor = true;
             // 
             // groupBox14
             // 
@@ -588,10 +608,14 @@
             // 
             // restartDelay
             // 
+            restartDelay.Increment = new decimal(new int[] { 500, 0, 0, 0 });
             restartDelay.Location = new Point(14, 22);
+            restartDelay.Maximum = new decimal(new int[] { 120000, 0, 0, 0 });
+            restartDelay.Minimum = new decimal(new int[] { 100, 0, 0, 0 });
             restartDelay.Name = "restartDelay";
             restartDelay.Size = new Size(72, 23);
             restartDelay.TabIndex = 1;
+            restartDelay.Value = new decimal(new int[] { 5000, 0, 0, 0 });
             // 
             // groupBox12
             // 
@@ -757,15 +781,6 @@
             groupBox20.TabStop = false;
             groupBox20.Text = "PWR";
             // 
-            // requestReboot
-            // 
-            requestReboot.Location = new Point(6, 22);
-            requestReboot.Name = "requestReboot";
-            requestReboot.Size = new Size(54, 35);
-            requestReboot.TabIndex = 18;
-            requestReboot.Text = "Reboot";
-            requestReboot.UseVisualStyleBackColor = false;
-            // 
             // requestOff
             // 
             requestOff.Location = new Point(6, 63);
@@ -775,16 +790,145 @@
             requestOff.Text = "Off";
             requestOff.UseVisualStyleBackColor = false;
             // 
+            // requestReboot
+            // 
+            requestReboot.Location = new Point(6, 22);
+            requestReboot.Name = "requestReboot";
+            requestReboot.Size = new Size(54, 35);
+            requestReboot.TabIndex = 18;
+            requestReboot.Text = "Reboot";
+            requestReboot.UseVisualStyleBackColor = false;
+            // 
+            // groupBox21
+            // 
+            groupBox21.Controls.Add(groupBox24);
+            groupBox21.Controls.Add(groupBox23);
+            groupBox21.Controls.Add(groupBox22);
+            groupBox21.Location = new Point(584, 132);
+            groupBox21.Name = "groupBox21";
+            groupBox21.Size = new Size(230, 164);
+            groupBox21.TabIndex = 21;
+            groupBox21.TabStop = false;
+            groupBox21.Text = "Beam Control";
+            // 
+            // groupBox24
+            // 
+            groupBox24.Controls.Add(beamRequestStatus);
+            groupBox24.Controls.Add(beamRelayStatus);
+            groupBox24.Location = new Point(112, 22);
+            groupBox24.Name = "groupBox24";
+            groupBox24.Size = new Size(112, 72);
+            groupBox24.TabIndex = 24;
+            groupBox24.TabStop = false;
+            groupBox24.Text = "Beam Status";
+            // 
+            // beamRequestStatus
+            // 
+            beamRequestStatus.Enabled = false;
+            beamRequestStatus.Font = new Font("Segoe UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            beamRequestStatus.ForeColor = SystemColors.ControlLightLight;
+            beamRequestStatus.Location = new Point(7, 16);
+            beamRequestStatus.Name = "beamRequestStatus";
+            beamRequestStatus.Size = new Size(98, 24);
+            beamRequestStatus.TabIndex = 18;
+            beamRequestStatus.Text = "NO LINK";
+            beamRequestStatus.UseVisualStyleBackColor = false;
+            // 
+            // beamRelayStatus
+            // 
+            beamRelayStatus.Enabled = false;
+            beamRelayStatus.Font = new Font("Segoe UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            beamRelayStatus.ForeColor = SystemColors.ControlLightLight;
+            beamRelayStatus.Location = new Point(7, 42);
+            beamRelayStatus.Name = "beamRelayStatus";
+            beamRelayStatus.Size = new Size(98, 24);
+            beamRelayStatus.TabIndex = 19;
+            beamRelayStatus.Text = "NO RELAY";
+            beamRelayStatus.UseVisualStyleBackColor = false;
+            // 
+            // groupBox23
+            // 
+            groupBox23.Controls.Add(relayID_beam);
+            groupBox23.Controls.Add(invertRelay_beam);
+            groupBox23.Location = new Point(6, 22);
+            groupBox23.Name = "groupBox23";
+            groupBox23.Size = new Size(100, 72);
+            groupBox23.TabIndex = 23;
+            groupBox23.TabStop = false;
+            groupBox23.Text = "Relay";
+            // 
+            // relayID_beam
+            // 
+            relayID_beam.Location = new Point(10, 18);
+            relayID_beam.Maximum = new decimal(new int[] { 8, 0, 0, 0 });
+            relayID_beam.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            relayID_beam.Name = "relayID_beam";
+            relayID_beam.Size = new Size(80, 23);
+            relayID_beam.TabIndex = 1;
+            relayID_beam.Value = new decimal(new int[] { 2, 0, 0, 0 });
+            // 
+            // invertRelay_beam
+            // 
+            invertRelay_beam.AutoSize = true;
+            invertRelay_beam.Checked = true;
+            invertRelay_beam.CheckState = CheckState.Checked;
+            invertRelay_beam.Location = new Point(10, 47);
+            invertRelay_beam.Name = "invertRelay_beam";
+            invertRelay_beam.Size = new Size(56, 19);
+            invertRelay_beam.TabIndex = 0;
+            invertRelay_beam.Text = "Invert";
+            invertRelay_beam.UseVisualStyleBackColor = true;
+            // 
+            // groupBox22
+            // 
+            groupBox22.Controls.Add(beamOn);
+            groupBox22.Controls.Add(beamAUTO);
+            groupBox22.Controls.Add(beamOFF);
+            groupBox22.Location = new Point(6, 100);
+            groupBox22.Name = "groupBox22";
+            groupBox22.Size = new Size(218, 58);
+            groupBox22.TabIndex = 20;
+            groupBox22.TabStop = false;
+            groupBox22.Text = "Manual Override";
+            // 
+            // beamOn
+            // 
+            beamOn.Location = new Point(150, 18);
+            beamOn.Name = "beamOn";
+            beamOn.Size = new Size(62, 32);
+            beamOn.TabIndex = 2;
+            beamOn.Text = "ON";
+            beamOn.UseVisualStyleBackColor = true;
+            // 
+            // beamAUTO
+            // 
+            beamAUTO.Location = new Point(78, 18);
+            beamAUTO.Name = "beamAUTO";
+            beamAUTO.Size = new Size(68, 32);
+            beamAUTO.TabIndex = 1;
+            beamAUTO.Text = "AUTO";
+            beamAUTO.UseVisualStyleBackColor = true;
+            // 
+            // beamOFF
+            // 
+            beamOFF.Location = new Point(6, 18);
+            beamOFF.Name = "beamOFF";
+            beamOFF.Size = new Size(68, 32);
+            beamOFF.TabIndex = 0;
+            beamOFF.Text = "OFF";
+            beamOFF.UseVisualStyleBackColor = true;
+            // 
             // Launcher
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(947, 512);
+            Controls.Add(groupBox21);
             Controls.Add(groupBox20);
             Controls.Add(groupBox19);
+            Controls.Add(groupBox9);
             Controls.Add(groupBox18);
             Controls.Add(groupBox10);
-            Controls.Add(groupBox9);
             Controls.Add(groupBox8);
             Controls.Add(groupBox5);
             Controls.Add(groupBox1);
@@ -816,7 +960,7 @@
             groupBox13.ResumeLayout(false);
             groupBox15.ResumeLayout(false);
             groupBox15.PerformLayout();
-            ((System.ComponentModel.ISupportInitialize)relayID).EndInit();
+            ((System.ComponentModel.ISupportInitialize)relayID_power).EndInit();
             groupBox14.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)restartDelay).EndInit();
             groupBox12.ResumeLayout(false);
@@ -824,6 +968,12 @@
             groupBox18.ResumeLayout(false);
             groupBox19.ResumeLayout(false);
             groupBox20.ResumeLayout(false);
+            groupBox21.ResumeLayout(false);
+            groupBox24.ResumeLayout(false);
+            groupBox23.ResumeLayout(false);
+            groupBox23.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)relayID_beam).EndInit();
+            groupBox22.ResumeLayout(false);
             ResumeLayout(false);
         }
 
@@ -866,7 +1016,7 @@
         private Button calbStatus;
         private GroupBox groupBox10;
         private GroupBox groupBox13;
-        private CheckBox invertRelay;
+        private CheckBox invertRelay_power;
         private GroupBox groupBox12;
         private Button powerOn;
         private Button powerAUTO;
@@ -876,7 +1026,7 @@
         private GroupBox groupBox16;
         private Button powerStatus;
         private GroupBox groupBox15;
-        private NumericUpDown relayID;
+        private NumericUpDown relayID_power;
         private GroupBox groupBox14;
         private NumericUpDown restartDelay;
         private GroupBox groupBox17;
@@ -893,5 +1043,16 @@
         private GroupBox groupBox20;
         private Button requestOff;
         private Button requestReboot;
+        private GroupBox groupBox21;
+        private GroupBox groupBox22;
+        private Button beamOn;
+        private Button beamAUTO;
+        private Button beamOFF;
+        private GroupBox groupBox24;
+        private Button beamRequestStatus;
+        private Button beamRelayStatus;
+        private GroupBox groupBox23;
+        private NumericUpDown relayID_beam;
+        private CheckBox invertRelay_beam;
     }
 }

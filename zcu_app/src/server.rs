@@ -30,8 +30,8 @@ use serde::de::DeserializeOwned;
 
 use crate::record::RecordType;
 use crate::task_engine::TaskRequest;
-use crate::types::{ClampCmd, ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
-use crate::{THREADS, archive, config::*, gpio, task_engine};
+use crate::types::{ClampCmd, ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, ExposeCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
+use crate::{THREADS, archive, config::*, gpio, set_beam_request, task_engine};
 
 const MAX_PAYLOAD: u32 = 1 << 20;
 
@@ -204,6 +204,24 @@ fn handle_client(mut stream: TcpStream) {
                 Err(e) => eprintln!("[!] {}: invalid Verify payload: {}", peer, e),
             },
 
+            CMD_EXPOSE => match parse_payload::<ExposeCmd>(&payload) {
+                Ok(v) => {
+
+                    // Lock task engine command
+                    let mut tcmd = task_engine::CMD.write().unwrap();
+
+                    // Add command to task engine
+                    tcmd.task_queue.push(
+                        TaskRequest {
+                            rtype: RecordType::Expose,
+                            rid: v.uuid,
+                        }
+                    );             
+
+                }
+                Err(e) => eprintln!("[!] {}: invalid Expose payload: {}", peer, e),
+            },
+
             CMD_READ => match parse_payload::<DumpCmd>(&payload) {
                 Ok(r) => {
 
@@ -355,7 +373,7 @@ fn handle_client(mut stream: TcpStream) {
             CMD_CLAMPCMD  => match parse_payload::<ClampCmd>(&payload) {
                 Ok(c) => {
 
-                    gpio::set_clamp_request(c.state).unwrap();
+                    set_beam_request(c.state);
 
                 }
                 Err(e) => eprintln!("[!] {}: invalid clamp request params: {}", peer, e),

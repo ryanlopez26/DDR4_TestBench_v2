@@ -27,6 +27,16 @@ namespace DDR4_TestingApp
         private static readonly Color AbortedColor = Color.FromArgb(0xC0, 0x39, 0x2B);
         private static readonly Color UnknownColor = Color.FromArgb(0x7F, 0x8C, 0x8D);
 
+        // ---- Digital-lane geometry for the boolean signals ---------------------
+        //
+        // The record now carries FOUR series that live in {0,1} — beam possible, beam
+        // present, beam request, SEFI — plus error rate in 0..1. Drawn raw they land on
+        // top of each other and the plot shows one line where there are five. Each gets
+        // its own horizontal band instead, logic-analyzer style: lane k occupies
+        // [k*LanePitch, k*LanePitch + LaneHeight] on the right axis.
+        private const double LanePitch = 1.25;
+        private const double LaneHeight = 0.85;
+
         /// <summary>Designer / blank-state constructor. Call <see cref="LoadAsync"/> yourself.</summary>
         public RecordViewer()
         {
@@ -183,6 +193,13 @@ namespace DDR4_TestingApp
 
         private void Populate(Record r)
         {
+            // --- identity -------------------------------------------------------
+            // The type is worth showing now that Expose exists: an Expose record has no
+            // bit counts and an empty capture, so a reader who can't see the type reads
+            // the zeros as a failed test rather than as "not applicable".
+            recordID.Text = $"Record {r.Rid:X4} · {Describe(r.Rtype)}";
+            Text = $"Record {r.Rid:X4} — {Describe(r.Rtype)}";
+
             // --- conclusion -----------------------------------------------------
             // Aborted wins: the engine archives a partial record with aborted = true,
             // and a record that is somehow neither is not a state to report as good.
@@ -197,16 +214,22 @@ namespace DDR4_TestingApp
 
             // --- bit totals -----------------------------------------------------
             // ProcessedBits is only maintained on the Write path server-side, so it
-            // reads 0 for Read / Verify / Dynamic records.
-            processed_bits.Text = r.ProcessedBits.ToString("N0");
-            correct_bits.Text = r.CorrectBits.ToString("N0");
-            incorrect_bits.Text = r.IncorrectBits.ToString("N0");
+            // reads 0 for Read / Verify / Dynamic records, and an Expose record touches
+            // no memory at all — every counter below is 0 by construction there.
+            bool countsApply = r.Rtype != RecordType.Expose;
+
+            processed_bits.Text = countsApply ? r.ProcessedBits.ToString("N0") : "n/a";
+            correct_bits.Text = countsApply ? r.CorrectBits.ToString("N0") : "n/a";
+            incorrect_bits.Text = countsApply ? r.IncorrectBits.ToString("N0") : "n/a";
 
             // err_bins counts BYTES binned by how many bits flipped in them, so its sum
             // is a byte count — deliberately not comparable to IncorrectBits (a bit count).
-            err_bins_total.Text = r.ErrBins == null
-                ? "—"
-                : r.ErrBins.Aggregate(0UL, (a, b) => a + b).ToString("N0") + " bytes";
+            if (!countsApply)
+                err_bins_total.Text = "n/a";
+            else
+                err_bins_total.Text = r.ErrBins == null
+                    ? "—"
+                    : r.ErrBins.Aggregate(0UL, (a, b) => a + b).ToString("N0") + " bytes";
 
             // --- beam metrics ---------------------------------------------------
             exposure_time.Text = r.ExposureTime.HasValue
@@ -227,15 +250,23 @@ namespace DDR4_TestingApp
         /// <summary>
         /// One trace per non-empty log series, against log_timestamp.
         ///
-        /// Two things make this fiddlier than it looks. First, the server pushes a
-        /// DIFFERENT SUBSET of series depending on record type and never pads them, so
-        /// three to five of the ten fields are empty in any given record — and a future
-        /// arm gaining a conditional push would make the lengths diverge, so each series
-        /// is trimmed against the timestamps independently rather than assumed parallel.
+        /// Three things make this fiddlier than it looks.
+        ///
+        /// First, the server pushes a DIFFERENT SUBSET of series depending on record
+        /// type and never pads them, so several of the twelve fields are empty in any
+        /// given record. Each series is trimmed against the timestamps independently
+        /// rather than assumed parallel.
+        ///
         /// Second, the magnitudes span nine orders of magnitude (bits processed ~1e9,
-        /// error rate 0..1, beam 0/1), so the counters get the left axis and the
-        /// unit-scale signals get a right axis. On one shared axis everything except
-        /// the largest trace flattens onto the baseline.
+        /// error rate 0..1, the flags 0/1), so the counters get the left axis and
+        /// everything unit-scale goes on a right axis. On one shared axis everything
+        /// except the largest trace flattens onto the baseline.
+        ///
+        /// Third — new this round — there are now FOUR boolean series rather than one.
+        /// Beam possible, beam present, beam request and SEFI all take the values 0 and
+        /// 1, so stacking them into separate lanes is the only way all four stay
+        /// readable. Reading beam request against beam present is the point of the
+        /// split: it separates "we asked and got beam" from "we asked and waited".
         /// </summary>
         private void PlotSignals(Record r)
         {
@@ -253,7 +284,8 @@ namespace DDR4_TestingApp
                 {
                     r.LogBitsProcessed.Length, r.LogBitsCorrect.Length,
                     r.LogBitsIncorrect.Length, r.LogErrorRate.Length,
-                    r.LogCurrentAddress.Length, r.LogBeamSignal.Length,
+                    r.LogCurrentAddress.Length, r.LogBeamPresent.Length,
+                    r.LogBeamPossible.Length, r.LogBeamRequest.Length,
                     r.LogSefiDetected.Length,
                 }.Max();
 
@@ -270,18 +302,37 @@ namespace DDR4_TestingApp
             plot.Axes.Bottom.Label.Text = usingIndex ? "Sample index" : "Time (s)";
             plot.Axes.Left.Label.Text = "Bits / address";
 
-            // Right-hand axis for everything that lives in 0..1.
+            // Right-hand axis carries the stacked lanes.
             var rightAxis = plot.Axes.AddRightAxis();
-            rightAxis.Label.Text = "Rate / flag";
+            rightAxis.Label.Text = "Signals (stacked)";
 
             bool any = false;
+
+            // --- counters, left axis ---------------------------------------------
             any |= AddSeries(t, ToDouble(r.LogBitsProcessed), "Bits Processed", null);
             any |= AddSeries(t, ToDouble(r.LogBitsCorrect), "Bits Correct", null);
             any |= AddSeries(t, ToDouble(r.LogBitsIncorrect), "Bits Incorrect", null);
             any |= AddSeries(t, ToDouble(r.LogCurrentAddress), "Address", null);
-            any |= AddSeries(t, r.LogErrorRate, "Error Rate", rightAxis);
-            any |= AddSeries(t, ToDouble(r.LogBeamSignal), "Beam", rightAxis);
-            any |= AddSeries(t, ToDouble(r.LogSefiDetected), "SEFI", rightAxis);
+
+            // --- lanes, right axis -------------------------------------------------
+            // Lanes are allocated bottom-up and only to series that have data, so a
+            // Read record (two flags) does not leave three empty bands.
+            int lane = 0;
+
+            if (AddLane(t, r.LogErrorRate, "Error Rate", rightAxis, lane, isBool: false))
+            { any = true; lane++; }
+
+            if (AddLane(t, ToDouble(r.LogBeamPossible), "Beam Possible", rightAxis, lane, isBool: true))
+            { any = true; lane++; }
+
+            if (AddLane(t, ToDouble(r.LogBeamPresent), "Beam Present", rightAxis, lane, isBool: true))
+            { any = true; lane++; }
+
+            if (AddLane(t, ToDouble(r.LogBeamRequest), "Beam Request", rightAxis, lane, isBool: true))
+            { any = true; lane++; }
+
+            if (AddLane(t, ToDouble(r.LogSefiDetected), "SEFI", rightAxis, lane, isBool: true))
+            { any = true; lane++; }
 
             if (any) plot.ShowLegend();
 
@@ -297,11 +348,8 @@ namespace DDR4_TestingApp
         {
             if (ys.Length == 0) return false;
 
-            int n = Math.Min(xs.Length, ys.Length);
-            if (n == 0) return false;
-
-            double[] x = xs.Length == n ? xs : xs.Take(n).ToArray();
-            double[] y = ys.Length == n ? ys : ys.Take(n).ToArray();
+            var (x, y) = Align(xs, ys);
+            if (x.Length == 0) return false;
 
             var scatter = log_plot.Plot.Add.Scatter(x, y);
 
@@ -316,12 +364,117 @@ namespace DDR4_TestingApp
             return true;
         }
 
+        /// <summary>
+        /// Add one unit-scale series into its own horizontal band on the right axis.
+        ///
+        /// Booleans are drawn as square steps rather than straight segments: a straight
+        /// line between two samples 200 ms apart implies the signal ramped, which for a
+        /// TTL line it did not. The legend carries the duty cycle, which is usually the
+        /// number actually wanted — "beam present 62% of samples" says more about a run
+        /// than the shape of the trace does.
+        /// </summary>
+        private bool AddLane(double[] xs, double[] ys, string label,
+                             ScottPlot.IYAxis axis, int lane, bool isBool)
+        {
+            if (ys.Length == 0) return false;
+
+            var (x, y) = Align(xs, ys);
+            if (x.Length == 0) return false;
+
+            double baseline = lane * LanePitch;
+
+            // Scale into the lane. Booleans are already 0..1; a rate could in principle
+            // exceed 1, so normalize against its own peak and say so in the legend.
+            double peak = isBool ? 1.0 : Math.Max(y.Max(), double.Epsilon);
+            double[] laneY = y.Select(v => baseline + (v / peak) * LaneHeight).ToArray();
+
+            if (isBool)
+                (x, laneY) = ToSteps(x, laneY);
+
+            var scatter = log_plot.Plot.Add.Scatter(x, laneY);
+            scatter.MarkerSize = 0;
+
+            scatter.LegendText = isBool
+                ? $"{label} ({DutyCycle(y):0.#}% high)"
+                : $"{label} (peak {peak:0.###})";
+
+            scatter.Axes.YAxis = axis;
+            return true;
+        }
+
+        /// <summary>
+        /// Match a series to the timestamp axis.
+        ///
+        /// A series SHORTER than the timestamps is simply truncated against. A series
+        /// LONGER than them is index-resampled rather than truncated, because truncating
+        /// would silently show only the first part of the run compressed onto the whole
+        /// axis. That case is real: the engine's Expose arm pushes log_beam_possible
+        /// twice per progress tick, so on an Expose record that series arrives at
+        /// roughly twice the length of every other one.
+        /// </summary>
+        private static (double[] xs, double[] ys) Align(double[] xs, double[] ys)
+        {
+            if (xs.Length == 0 || ys.Length == 0)
+                return (Array.Empty<double>(), Array.Empty<double>());
+
+            if (ys.Length == xs.Length)
+                return (xs, ys);
+
+            if (ys.Length < xs.Length)
+                return (xs.Take(ys.Length).ToArray(), ys);
+
+            // Longer than the axis: resample down, nearest sample per slot.
+            int n = xs.Length;
+            var resampled = new double[n];
+            for (int i = 0; i < n; i++)
+                resampled[i] = ys[(int)((long)i * ys.Length / n)];
+            return (xs, resampled);
+        }
+
+        /// <summary>
+        /// Expand a series into square steps: hold each value until the next sample,
+        /// then jump. Produces 2n-1 points from n.
+        /// </summary>
+        private static (double[] xs, double[] ys) ToSteps(double[] xs, double[] ys)
+        {
+            int n = Math.Min(xs.Length, ys.Length);
+            if (n <= 1) return (xs, ys);
+
+            var sx = new double[n * 2 - 1];
+            var sy = new double[n * 2 - 1];
+
+            int k = 0;
+            for (int i = 0; i < n; i++)
+            {
+                sx[k] = xs[i];
+                sy[k] = ys[i];
+                k++;
+
+                if (i + 1 < n)
+                {
+                    sx[k] = xs[i + 1];
+                    sy[k] = ys[i];   // hold the old level up to the next sample
+                    k++;
+                }
+            }
+
+            return (sx, sy);
+        }
+
+        /// <summary>Percentage of samples that were high, for a 0/1 series.</summary>
+        private static double DutyCycle(double[] ys) =>
+            ys.Length == 0 ? 0.0 : ys.Count(v => v >= 0.5) * 100.0 / ys.Length;
+
         // ============================== Bin plots ==============================
 
         /// <summary>
         /// Bar chart of one bin array. A null array (the server's Option was None) leaves
         /// the pane empty rather than drawing a row of zeros, which would read as
         /// "measured, all zero" instead of "not recorded".
+        ///
+        /// Note the engine now initializes both bin arrays to Some([0; N]) for every
+        /// record type, so null only shows up on records written before that change —
+        /// on a current Read or Expose record the pane draws a legitimate row of zeros.
         /// </summary>
         private static void PlotBins(ScottPlot.WinForms.FormsPlot pane, ulong[]? bins, int expected)
         {
@@ -354,6 +507,18 @@ namespace DDR4_TestingApp
             if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
             {
                 MessageBox.Show("Not connected.");
+                return;
+            }
+
+            // An Expose record touches no memory: the engine creates the capture file
+            // and writes nothing to it, so the download would succeed with 0 bytes.
+            // Say so up front rather than after a round trip.
+            if (record?.Rtype == RecordType.Expose)
+            {
+                MessageBox.Show(
+                    "Expose records carry no capture data — the engine only tallies beam " +
+                    "time, so the capture file is empty by design.",
+                    "Download Capture", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -390,9 +555,12 @@ namespace DDR4_TestingApp
                 }
                 else
                 {
-                    string kind = record?.Rtype == RecordType.Read
-                        ? "raw bytes read back"
-                        : "actual XOR expected, one byte per sample";
+                    string kind = record?.Rtype switch
+                    {
+                        RecordType.Read => "raw bytes read back",
+                        RecordType.Expose => "empty — Expose records write no capture bytes",
+                        _ => "actual XOR expected, one byte per sample",
+                    };
 
                     MessageBox.Show(
                         $"Saved {written / (1024.0 * 1024.0):0.##} MB.\n\nContents: {kind}.",
@@ -428,8 +596,8 @@ namespace DDR4_TestingApp
 
             if (MessageBox.Show(
                     $"Permanently delete record {rid:X4} and its capture from the ZCU?\n\n" +
-                    "This cannot be undone, and any run referencing this record will be " +
-                    "left with a dangling link.",
+                    "This cannot be undone. The server also strips this record's id from " +
+                    "every run that cites it.",
                     "Request Deletion", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
                 != DialogResult.Yes)
                 return;
@@ -449,7 +617,8 @@ namespace DDR4_TestingApp
                 MessageBox.Show(
                     "The server refused the deletion. It returns false when no record " +
                     "with that id is archived — including while the record is still " +
-                    "running — or when a file could not be removed.",
+                    "running — when the server is in safe mode with /dvr unmounted, or " +
+                    "when a file could not be removed.",
                     "Request Deletion", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (OperationCanceledException) { }
@@ -484,6 +653,21 @@ namespace DDR4_TestingApp
             if (conclusion_status.Text != text) conclusion_status.Text = text;
             if (conclusion_status.BackColor != back) conclusion_status.BackColor = back;
         }
+
+        /// <summary>
+        /// Human label for a record type. Has an explicit arm for every variant plus a
+        /// fallback, so a sixth variant added to record.rs shows up as an unknown index
+        /// rather than throwing out of a switch expression.
+        /// </summary>
+        private static string Describe(RecordType t) => t switch
+        {
+            RecordType.Read => "Read",
+            RecordType.Verify => "Verify",
+            RecordType.Write => "Write",
+            RecordType.Dynamic => "Dynamic",
+            RecordType.Expose => "Expose",
+            _ => $"Type {(uint)t}",
+        };
 
         private static double[] ToDouble(ulong[] v) => Array.ConvertAll(v, x => (double)x);
         private static double[] ToDouble(uint[] v) => Array.ConvertAll(v, x => (double)x);

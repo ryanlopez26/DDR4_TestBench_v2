@@ -33,48 +33,54 @@
             groupBox49 = new GroupBox();
             samplingInfo = new RichTextBox();
             label5 = new Label();
-            groupBox6 = new GroupBox();
-            addrInfo = new RichTextBox();
             blockSize = new ComboBox();
             label6 = new Label();
             selectionSize = new ComboBox();
             label7 = new Label();
+            groupBox6 = new GroupBox();
+            addrInfo = new RichTextBox();
             groupBox1 = new GroupBox();
-            groupBox2 = new GroupBox();
             groupBox3 = new GroupBox();
             dataPattern = new ComboBox();
-            dataSeed = new TextBox();
+            groupBox2 = new GroupBox();
             regenSeed = new Button();
+            dataSeed = new TextBox();
             groupBox4 = new GroupBox();
-            groupBox7 = new GroupBox();
-            flashFPGA = new Button();
-            fpgaImages = new ComboBox();
             groupBox8 = new GroupBox();
             currentImage = new TextBox();
+            groupBox7 = new GroupBox();
+            flashFPGA = new Button();
+            refreshFPGA = new Button();
+            fpgaImages = new ComboBox();
             groupBox5 = new GroupBox();
-            sefiThresholdSlider = new TrackBar();
-            sefiThreshold = new TextBox();
-            groupBox9 = new GroupBox();
             enableAutoSEFIMode = new CheckBox();
-            sendConfig = new Button();
-            groupBox10 = new GroupBox();
-            syncStatus = new Button();
+            sefiThreshold = new TextBox();
+            sefiThresholdSlider = new TrackBar();
+            groupBox9 = new GroupBox();
             groupBox11 = new GroupBox();
             lastSync = new TextBox();
+            groupBox10 = new GroupBox();
+            syncStatus = new Button();
+            sendConfig = new Button();
+            groupBox12 = new GroupBox();
+            exposureLimitEnabled = new CheckBox();
+            exposureLimitMs = new TextBox();
+            exposureSeconds = new Label();
             groupBox45.SuspendLayout();
             groupBox49.SuspendLayout();
             groupBox6.SuspendLayout();
             groupBox1.SuspendLayout();
-            groupBox2.SuspendLayout();
             groupBox3.SuspendLayout();
+            groupBox2.SuspendLayout();
             groupBox4.SuspendLayout();
-            groupBox7.SuspendLayout();
             groupBox8.SuspendLayout();
+            groupBox7.SuspendLayout();
             groupBox5.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)sefiThresholdSlider).BeginInit();
             groupBox9.SuspendLayout();
-            groupBox10.SuspendLayout();
             groupBox11.SuspendLayout();
+            groupBox10.SuspendLayout();
+            groupBox12.SuspendLayout();
             SuspendLayout();
             // 
             // groupBox45
@@ -130,25 +136,6 @@
             label5.TabIndex = 26;
             label5.Text = "Block Factor:";
             // 
-            // groupBox6
-            // 
-            groupBox6.Controls.Add(addrInfo);
-            groupBox6.Location = new Point(12, 347);
-            groupBox6.Name = "groupBox6";
-            groupBox6.Size = new Size(399, 140);
-            groupBox6.TabIndex = 5;
-            groupBox6.TabStop = false;
-            groupBox6.Text = "Address Information";
-            // 
-            // addrInfo
-            // 
-            addrInfo.Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            addrInfo.Location = new Point(10, 19);
-            addrInfo.Name = "addrInfo";
-            addrInfo.Size = new Size(376, 115);
-            addrInfo.TabIndex = 2;
-            addrInfo.Text = "";
-            // 
             // blockSize
             // 
             blockSize.FormattingEnabled = true;
@@ -185,6 +172,25 @@
             label7.TabIndex = 22;
             label7.Text = "Selection Size:";
             // 
+            // groupBox6
+            // 
+            groupBox6.Controls.Add(addrInfo);
+            groupBox6.Location = new Point(12, 347);
+            groupBox6.Name = "groupBox6";
+            groupBox6.Size = new Size(399, 140);
+            groupBox6.TabIndex = 5;
+            groupBox6.TabStop = false;
+            groupBox6.Text = "Address Information";
+            // 
+            // addrInfo
+            // 
+            addrInfo.Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
+            addrInfo.Location = new Point(10, 19);
+            addrInfo.Name = "addrInfo";
+            addrInfo.Size = new Size(376, 115);
+            addrInfo.TabIndex = 2;
+            addrInfo.Text = "";
+            // 
             // groupBox1
             // 
             groupBox1.Controls.Add(groupBox3);
@@ -195,17 +201,6 @@
             groupBox1.TabIndex = 30;
             groupBox1.TabStop = false;
             groupBox1.Text = "Data Setup";
-            // 
-            // groupBox2
-            // 
-            groupBox2.Controls.Add(regenSeed);
-            groupBox2.Controls.Add(dataSeed);
-            groupBox2.Location = new Point(143, 20);
-            groupBox2.Name = "groupBox2";
-            groupBox2.Size = new Size(222, 55);
-            groupBox2.TabIndex = 31;
-            groupBox2.TabStop = false;
-            groupBox2.Text = "Seed";
             // 
             // groupBox3
             // 
@@ -226,13 +221,16 @@
             dataPattern.Size = new Size(118, 23);
             dataPattern.TabIndex = 30;
             // 
-            // dataSeed
+            // groupBox2
             // 
-            dataSeed.Location = new Point(6, 22);
-            dataSeed.Name = "dataSeed";
-            dataSeed.Size = new Size(98, 23);
-            dataSeed.TabIndex = 32;
-            dataSeed.Text = "00000000";
+            groupBox2.Controls.Add(regenSeed);
+            groupBox2.Controls.Add(dataSeed);
+            groupBox2.Location = new Point(143, 20);
+            groupBox2.Name = "groupBox2";
+            groupBox2.Size = new Size(222, 55);
+            groupBox2.TabIndex = 31;
+            groupBox2.TabStop = false;
+            groupBox2.Text = "Seed";
             // 
             // regenSeed
             // 
@@ -244,6 +242,14 @@
             regenSeed.Text = "Regenerate";
             regenSeed.UseVisualStyleBackColor = true;
             // 
+            // dataSeed
+            // 
+            dataSeed.Location = new Point(6, 22);
+            dataSeed.Name = "dataSeed";
+            dataSeed.Size = new Size(98, 23);
+            dataSeed.TabIndex = 32;
+            dataSeed.Text = "00000000";
+            // 
             // groupBox4
             // 
             groupBox4.Controls.Add(groupBox8);
@@ -254,36 +260,6 @@
             groupBox4.TabIndex = 33;
             groupBox4.TabStop = false;
             groupBox4.Text = "FPGA";
-            // 
-            // groupBox7
-            // 
-            groupBox7.Controls.Add(flashFPGA);
-            groupBox7.Controls.Add(fpgaImages);
-            groupBox7.Location = new Point(12, 20);
-            groupBox7.Name = "groupBox7";
-            groupBox7.Size = new Size(353, 55);
-            groupBox7.TabIndex = 31;
-            groupBox7.TabStop = false;
-            groupBox7.Text = "Selected Image";
-            // 
-            // flashFPGA
-            // 
-            flashFPGA.Font = new Font("Segoe UI", 9F);
-            flashFPGA.Location = new Point(257, 17);
-            flashFPGA.Name = "flashFPGA";
-            flashFPGA.Size = new Size(90, 27);
-            flashFPGA.TabIndex = 31;
-            flashFPGA.Text = "Flash";
-            flashFPGA.UseVisualStyleBackColor = true;
-            // 
-            // fpgaImages
-            // 
-            fpgaImages.FormattingEnabled = true;
-            fpgaImages.Items.AddRange(new object[] { "Image1", "Image2", "Image3", "Image4" });
-            fpgaImages.Location = new Point(7, 21);
-            fpgaImages.Name = "fpgaImages";
-            fpgaImages.Size = new Size(244, 23);
-            fpgaImages.TabIndex = 31;
             // 
             // groupBox8
             // 
@@ -304,6 +280,46 @@
             currentImage.TabIndex = 33;
             currentImage.Text = "None";
             // 
+            // groupBox7
+            // 
+            groupBox7.Controls.Add(flashFPGA);
+            groupBox7.Controls.Add(refreshFPGA);
+            groupBox7.Controls.Add(fpgaImages);
+            groupBox7.Location = new Point(12, 20);
+            groupBox7.Name = "groupBox7";
+            groupBox7.Size = new Size(353, 55);
+            groupBox7.TabIndex = 31;
+            groupBox7.TabStop = false;
+            groupBox7.Text = "Available Images";
+            // 
+            // fpgaImages
+            // 
+            fpgaImages.FormattingEnabled = true;
+            fpgaImages.Location = new Point(7, 21);
+            fpgaImages.Name = "fpgaImages";
+            fpgaImages.Size = new Size(196, 23);
+            fpgaImages.TabIndex = 31;
+            // 
+            // refreshFPGA
+            // 
+            refreshFPGA.Font = new Font("Segoe UI", 9F);
+            refreshFPGA.Location = new Point(209, 19);
+            refreshFPGA.Name = "refreshFPGA";
+            refreshFPGA.Size = new Size(66, 27);
+            refreshFPGA.TabIndex = 32;
+            refreshFPGA.Text = "Refresh";
+            refreshFPGA.UseVisualStyleBackColor = true;
+            // 
+            // flashFPGA
+            // 
+            flashFPGA.Font = new Font("Segoe UI", 9F);
+            flashFPGA.Location = new Point(281, 19);
+            flashFPGA.Name = "flashFPGA";
+            flashFPGA.Size = new Size(66, 27);
+            flashFPGA.TabIndex = 33;
+            flashFPGA.Text = "Flash";
+            flashFPGA.UseVisualStyleBackColor = true;
+            // 
             // groupBox5
             // 
             groupBox5.Controls.Add(enableAutoSEFIMode);
@@ -311,26 +327,36 @@
             groupBox5.Controls.Add(sefiThresholdSlider);
             groupBox5.Location = new Point(417, 259);
             groupBox5.Name = "groupBox5";
-            groupBox5.Size = new Size(371, 88);
+            groupBox5.Size = new Size(247, 88);
             groupBox5.TabIndex = 33;
             groupBox5.TabStop = false;
             groupBox5.Text = "Dynamic Test";
             // 
-            // sefiThresholdSlider
+            // enableAutoSEFIMode
             // 
-            sefiThresholdSlider.Location = new Point(12, 22);
-            sefiThresholdSlider.Name = "sefiThresholdSlider";
-            sefiThresholdSlider.Size = new Size(249, 45);
-            sefiThresholdSlider.TabIndex = 0;
+            enableAutoSEFIMode.AutoSize = true;
+            enableAutoSEFIMode.Location = new Point(143, 51);
+            enableAutoSEFIMode.Name = "enableAutoSEFIMode";
+            enableAutoSEFIMode.Size = new Size(88, 19);
+            enableAutoSEFIMode.TabIndex = 34;
+            enableAutoSEFIMode.Text = "AUTO Reset";
+            enableAutoSEFIMode.UseVisualStyleBackColor = true;
             // 
             // sefiThreshold
             // 
-            sefiThreshold.Location = new Point(267, 22);
+            sefiThreshold.Location = new Point(143, 22);
             sefiThreshold.Name = "sefiThreshold";
             sefiThreshold.Size = new Size(98, 23);
             sefiThreshold.TabIndex = 33;
             sefiThreshold.Text = "0.0";
             sefiThreshold.TextChanged += sefiThreshold_TextChanged;
+            // 
+            // sefiThresholdSlider
+            // 
+            sefiThresholdSlider.Location = new Point(12, 22);
+            sefiThresholdSlider.Name = "sefiThresholdSlider";
+            sefiThresholdSlider.Size = new Size(125, 45);
+            sefiThresholdSlider.TabIndex = 0;
             // 
             // groupBox9
             // 
@@ -344,24 +370,24 @@
             groupBox9.TabStop = false;
             groupBox9.Text = "Config Manager";
             // 
-            // enableAutoSEFIMode
+            // groupBox11
             // 
-            enableAutoSEFIMode.AutoSize = true;
-            enableAutoSEFIMode.Location = new Point(273, 52);
-            enableAutoSEFIMode.Name = "enableAutoSEFIMode";
-            enableAutoSEFIMode.Size = new Size(88, 19);
-            enableAutoSEFIMode.TabIndex = 34;
-            enableAutoSEFIMode.Text = "AUTO Reset";
-            enableAutoSEFIMode.UseVisualStyleBackColor = true;
+            groupBox11.Controls.Add(lastSync);
+            groupBox11.Location = new Point(143, 26);
+            groupBox11.Name = "groupBox11";
+            groupBox11.Size = new Size(228, 55);
+            groupBox11.TabIndex = 34;
+            groupBox11.TabStop = false;
+            groupBox11.Text = "Last Sync";
             // 
-            // sendConfig
+            // lastSync
             // 
-            sendConfig.Location = new Point(6, 87);
-            sendConfig.Name = "sendConfig";
-            sendConfig.Size = new Size(365, 41);
-            sendConfig.TabIndex = 0;
-            sendConfig.Text = "Update Configuration";
-            sendConfig.UseVisualStyleBackColor = true;
+            lastSync.Location = new Point(8, 22);
+            lastSync.Name = "lastSync";
+            lastSync.ReadOnly = true;
+            lastSync.Size = new Size(210, 23);
+            lastSync.TabIndex = 35;
+            lastSync.Text = "None";
             // 
             // groupBox10
             // 
@@ -383,30 +409,60 @@
             syncStatus.Text = "OUT OF DATE";
             syncStatus.UseVisualStyleBackColor = true;
             // 
-            // groupBox11
+            // sendConfig
             // 
-            groupBox11.Controls.Add(lastSync);
-            groupBox11.Location = new Point(143, 26);
-            groupBox11.Name = "groupBox11";
-            groupBox11.Size = new Size(228, 55);
-            groupBox11.TabIndex = 34;
-            groupBox11.TabStop = false;
-            groupBox11.Text = "Last Sync";
+            sendConfig.Location = new Point(6, 87);
+            sendConfig.Name = "sendConfig";
+            sendConfig.Size = new Size(365, 41);
+            sendConfig.TabIndex = 0;
+            sendConfig.Text = "Update Configuration";
+            sendConfig.UseVisualStyleBackColor = true;
             // 
-            // lastSync
+            // groupBox12
             // 
-            lastSync.Location = new Point(8, 22);
-            lastSync.Name = "lastSync";
-            lastSync.ReadOnly = true;
-            lastSync.Size = new Size(210, 23);
-            lastSync.TabIndex = 35;
-            lastSync.Text = "None";
+            groupBox12.Controls.Add(exposureSeconds);
+            groupBox12.Controls.Add(exposureLimitMs);
+            groupBox12.Controls.Add(exposureLimitEnabled);
+            groupBox12.Location = new Point(670, 259);
+            groupBox12.Name = "groupBox12";
+            groupBox12.Size = new Size(124, 88);
+            groupBox12.TabIndex = 35;
+            groupBox12.TabStop = false;
+            groupBox12.Text = "Exposure (ms)";
+            // 
+            // exposureLimitEnabled
+            // 
+            exposureLimitEnabled.AutoSize = true;
+            exposureLimitEnabled.Location = new Point(8, 22);
+            exposureLimitEnabled.Name = "exposureLimitEnabled";
+            exposureLimitEnabled.Size = new Size(83, 19);
+            exposureLimitEnabled.TabIndex = 35;
+            exposureLimitEnabled.Text = "Time Limit";
+            exposureLimitEnabled.UseVisualStyleBackColor = true;
+            // 
+            // exposureLimitMs
+            // 
+            exposureLimitMs.Location = new Point(8, 47);
+            exposureLimitMs.Name = "exposureLimitMs";
+            exposureLimitMs.Size = new Size(58, 23);
+            exposureLimitMs.TabIndex = 36;
+            exposureLimitMs.Text = "0";
+            // 
+            // exposureSeconds
+            // 
+            exposureSeconds.AutoSize = true;
+            exposureSeconds.Location = new Point(70, 51);
+            exposureSeconds.Name = "exposureSeconds";
+            exposureSeconds.Size = new Size(23, 15);
+            exposureSeconds.TabIndex = 37;
+            exposureSeconds.Text = "= 0 s";
             // 
             // ConfigEditor
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(800, 497);
+            Controls.Add(groupBox12);
             Controls.Add(groupBox9);
             Controls.Add(groupBox5);
             Controls.Add(groupBox4);
@@ -420,20 +476,22 @@
             groupBox49.ResumeLayout(false);
             groupBox6.ResumeLayout(false);
             groupBox1.ResumeLayout(false);
+            groupBox3.ResumeLayout(false);
             groupBox2.ResumeLayout(false);
             groupBox2.PerformLayout();
-            groupBox3.ResumeLayout(false);
             groupBox4.ResumeLayout(false);
-            groupBox7.ResumeLayout(false);
             groupBox8.ResumeLayout(false);
             groupBox8.PerformLayout();
+            groupBox7.ResumeLayout(false);
             groupBox5.ResumeLayout(false);
             groupBox5.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)sefiThresholdSlider).EndInit();
             groupBox9.ResumeLayout(false);
-            groupBox10.ResumeLayout(false);
             groupBox11.ResumeLayout(false);
             groupBox11.PerformLayout();
+            groupBox10.ResumeLayout(false);
+            groupBox12.ResumeLayout(false);
+            groupBox12.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -457,9 +515,9 @@
         private Button regenSeed;
         private TextBox dataSeed;
         private GroupBox groupBox4;
-        private ComboBox comboBox1;
         private GroupBox groupBox7;
         private Button flashFPGA;
+        private Button refreshFPGA;
         private GroupBox groupBox8;
         private TextBox currentImage;
         private ComboBox fpgaImages;
@@ -473,5 +531,9 @@
         private GroupBox groupBox10;
         private Button syncStatus;
         private Button sendConfig;
+        private GroupBox groupBox12;
+        private Label exposureSeconds;
+        private TextBox exposureLimitMs;
+        private CheckBox exposureLimitEnabled;
     }
 }

@@ -79,7 +79,7 @@ namespace DDR4_TestingApp
         {
             RefreshSamplingInfo();
             RefreshSyncStatus();
-            await RefreshFpgaImageAsync();
+            await RefreshFpgaAsync();
         }
 
         private void ConfigEditor_FormClosed(object? sender, FormClosedEventArgs e)
@@ -98,6 +98,14 @@ namespace DDR4_TestingApp
             blockSize.DropDownStyle = ComboBoxStyle.DropDownList;
             blockFactor.DropDownStyle = ComboBoxStyle.DropDownList;
             dataPattern.DropDownStyle = ComboBoxStyle.DropDownList;
+
+            // fpgaImages stays a plain DropDown, NOT a DropDownList, on purpose. The
+            // server reports an empty list whenever /dvr is unreadable — which is the
+            // normal state in safe mode — and an operator who knows the image name
+            // should still be able to type it. flashFPGA falls back to .Text for that.
+            fpgaImages.DropDownStyle = ComboBoxStyle.DropDown;
+            fpgaImages.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            fpgaImages.AutoCompleteSource = AutoCompleteSource.ListItems;
 
             samplingInfo.ReadOnly = true;
             addrInfo.ReadOnly = true;
@@ -134,7 +142,11 @@ namespace DDR4_TestingApp
             sefiThresholdSlider.ValueChanged += sefiThresholdSlider_ValueChanged;
             enableAutoSEFIMode.CheckedChanged += enableAutoSEFIMode_CheckedChanged;
 
+            exposureLimitEnabled.CheckedChanged += exposureLimitEnabled_CheckedChanged;
+            exposureLimitMs.TextChanged += exposureLimitMs_TextChanged;
+
             flashFPGA.Click += flashFPGA_Click;
+            refreshFPGA.Click += refreshFPGA_Click;
             sendConfig.Click += sendConfig_Click;
 
             // sefiThreshold.TextChanged is already wired by the designer.
@@ -159,17 +171,23 @@ namespace DDR4_TestingApp
                 dataPattern.SelectedIndex = Array.IndexOf(PatternByIndex, Config.Pattern);
                 dataSeed.Text = ((uint)Config.PatternSeed).ToString("X8");
 
-                int slider = (int)Math.Round(Config.SefiThreshold * 1000.0 * 100.0 / 100.0);
-                sefiThresholdSlider.Value = Clamp(slider, 0, 1000);
+                // SefiThreshold is a fraction 0..1; the slider is 0..1000, i.e. 0.1 %
+                // per notch.
+                sefiThresholdSlider.Value =
+                    Clamp((int)Math.Round(Config.SefiThreshold * 1000.0), 0, 1000);
                 sefiThreshold.Text = (Config.SefiThreshold * 100.0).ToString("0.###");
 
                 enableAutoSEFIMode.Checked = Config.AutomatedSefiMode;
+
+                exposureLimitEnabled.Checked = Config.ExposureTimeLimitEnabled;
+                exposureLimitMs.Text = Config.ExposureTimeLimitMs.ToString("0.###");
             }
             finally
             {
                 loading = false;
             }
 
+            RefreshExposureState();
             RefreshSamplingInfo();
             RefreshSyncStatus();
         }
@@ -348,30 +366,180 @@ namespace DDR4_TestingApp
             RefreshSyncStatus();
         }
 
+        // ============================== Exposure ==============================
+
+        private void exposureLimitEnabled_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (loading) return;
+            Config.ExposureTimeLimitEnabled = exposureLimitEnabled.Checked;
+
+            // ConfigCmd.Validate() rejects an enabled limit of zero — the engine would
+            // close the record on its first progress tick — so ticking the box against
+            // the default 0 would make every push fail with a dialog. Prefill a usable
+            // value instead. It lands in the box, so it is visible, not silent.
+            if (exposureLimitEnabled.Checked && Config.ExposureTimeLimitMs <= 0.0)
+                exposureLimitMs.Text = "30000";     // TextChanged commits it
+
+            RefreshExposureState();
+            RefreshSamplingInfo();
+        }
+
+        /// <summary>
+        /// The box holds MILLISECONDS, matching the field name and what the engine
+        /// compares (<c>exposure_time_limit_ms &lt;= exposure_time * 1000</c>). The
+        /// label beside it converts to seconds, because the number operators actually
+        /// have in mind at a beam line is "thirty seconds of beam", and 30000 is easy to
+        /// mistype as 3000.
+        /// </summary>
+        private void exposureLimitMs_TextChanged(object? sender, EventArgs e)
+        {
+            if (loading) return;
+
+            if (!double.TryParse(exposureLimitMs.Text.Trim(), NumberStyles.Float,
+                                 CultureInfo.InvariantCulture, out double ms)
+                || ms < 0.0)
+            {
+                // Don't fight the operator mid-keystroke; flag it and leave Config alone.
+                exposureLimitMs.BackColor = Color.MistyRose;
+                exposureSeconds.Text = "= ?";
+                return;
+            }
+
+            exposureLimitMs.BackColor = SystemColors.Window;
+            Config.ExposureTimeLimitMs = ms;
+            RefreshExposureState();
+            RefreshSamplingInfo();
+        }
+
+        /// <summary>
+        /// Keep the seconds readout and the enabled state of the box in step. The box
+        /// is greyed when the limit is off so it is obvious the number is inert — the
+        /// server ignores the field entirely unless the flag is set.
+        /// </summary>
+        private void RefreshExposureState()
+        {
+            if (IsDisposed) return;
+
+            exposureLimitMs.Enabled = Config.ExposureTimeLimitEnabled;
+
+            double seconds = Config.ExposureTimeLimitSeconds;
+            exposureSeconds.Text = Config.ExposureTimeLimitEnabled
+                ? $"= {seconds:0.##} s"
+                : "(off)";
+        }
+
         // ============================== FPGA ==============================
 
-        private async Task RefreshFpgaImageAsync()
+        /// <summary>
+        /// Repopulate the image list and the loaded-image readout in one pass.
+        ///
+        /// Three round trips, because no single command answers the question. The
+        /// server reports which image name it last flashed (in memory only, so it is
+        /// null after a restart even when the PL is configured), the directory listing,
+        /// and the PL's own loaded line come from GETFPGAIMAGE, GETFPGAIMAGES and INFO
+        /// respectively. Cross-referencing them is what makes "(unknown)" readable.
+        /// </summary>
+        private async Task RefreshFpgaAsync()
         {
+            if (IsDisposed) return;
+
             if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
             {
+                SetImageList(Array.Empty<string>(), connected: false);
                 currentImage.Text = "(not connected)";
                 return;
             }
 
+            refreshFPGA.Enabled = false;
             try
             {
+                string[] images = await TcpManager.ListFpgaImagesAsync(formClosing.Token);
+                if (IsDisposed) return;
+                SetImageList(images, connected: true);
+
                 string? name = await TcpManager.GetFpgaImageAsync(formClosing.Token);
                 if (IsDisposed) return;
 
-                // The server tracks this in memory only, so it reads null after a
-                // restart even when the PL is configured.
-                currentImage.Text = name ?? "(unknown)";
+                InfoRsp info = await TcpManager.GetInfoAsync(formClosing.Token);
+                if (IsDisposed) return;
+
+                currentImage.Text = DescribeLoadedImage(name, images, info);
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) when (IsConnectionFault(ex))
             {
                 if (!IsDisposed) currentImage.Text = "(unavailable)";
             }
+            finally
+            {
+                if (!IsDisposed) refreshFPGA.Enabled = true;
+            }
+        }
+
+        /// <summary>
+        /// Fill the combo, keeping whatever the operator had selected or typed if it is
+        /// still valid. The count goes in the group caption rather than a label, and an
+        /// empty list is reported as "unreadable" rather than "none" — see
+        /// <see cref="TcpManager.ListFpgaImagesAsync"/>, where an empty result is
+        /// genuinely ambiguous.
+        /// </summary>
+        private void SetImageList(string[] images, bool connected)
+        {
+            string keep = (fpgaImages.SelectedItem?.ToString() ?? fpgaImages.Text).Trim();
+
+            loading = true;
+            try
+            {
+                fpgaImages.BeginUpdate();
+                fpgaImages.Items.Clear();
+                fpgaImages.Items.AddRange(images);
+                fpgaImages.EndUpdate();
+
+                int at = Array.IndexOf(images, keep);
+                if (at >= 0) fpgaImages.SelectedIndex = at;
+                else fpgaImages.Text = keep;        // typed a name not in the directory
+            }
+            finally { loading = false; }
+
+            if (!connected)
+                groupBox7.Text = "Available Images";
+            else if (images.Length == 0)
+                groupBox7.Text = "Available Images (none readable)";
+            else
+                groupBox7.Text = $"Available Images ({images.Length})";
+
+            flashFPGA.Enabled = connected;
+        }
+
+        /// <summary>
+        /// Turn three partial answers into one line the operator can act on. The
+        /// interesting cases are the disagreements: a name the server remembers that is
+        /// no longer in /dvr/fpga (someone deleted it, or the card was swapped), and a
+        /// PL that reports configured while the server has no idea what is in it
+        /// (the server restarted but the bitstream survived).
+        /// </summary>
+        private static string DescribeLoadedImage(string? name, string[] images, InfoRsp info)
+        {
+            string calib = info.ControllerCalibrated ? "" : ", MIG NOT calibrated";
+
+            if (name == null)
+            {
+                return info.FpgaLoaded
+                    ? $"(unknown — PL reports configured{calib})"
+                    : $"(none — PL reports no bitstream{calib})";
+            }
+
+            string warn = "";
+            if (!info.FpgaLoaded) warn = " — but the PL reports NO bitstream";
+            else if (images.Length > 0 && Array.IndexOf(images, name) < 0)
+                warn = " — no longer present in /dvr/fpga";
+
+            return name + warn + (calib.Length > 0 ? " (" + calib.TrimStart(',', ' ') + ")" : "");
+        }
+
+        private async void refreshFPGA_Click(object? sender, EventArgs e)
+        {
+            await RefreshFpgaAsync();
         }
 
         private async void flashFPGA_Click(object? sender, EventArgs e)
@@ -389,10 +557,18 @@ namespace DDR4_TestingApp
                 return;
             }
 
+            // Typed rather than picked, and not in the last listing. The server will
+            // refuse it, but say so here rather than after a round trip.
+            bool listed = fpgaImages.Items.Contains(name);
+            string notListed = listed
+                ? ""
+                : "\n\nThat name is not in the last directory listing. Refresh first — " +
+                  "the server refuses anything it cannot find in /dvr/fpga.";
+
             if (MessageBox.Show(
                     $"Load '{name}.bit.bin' into the PL?\n\n" +
                     "The DDR4 controller will re-train afterwards, so queued work will " +
-                    "stall until calibration comes back.",
+                    "stall until calibration comes back." + notListed,
                     "Flash FPGA", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning)
                 != DialogResult.OK)
                 return;
@@ -408,7 +584,7 @@ namespace DDR4_TestingApp
                         "Flash refused. The server rejects the request when the image " +
                         "isn't in /dvr/fpga, the engine is busy, or fpgautil fails.");
 
-                await RefreshFpgaImageAsync();
+                await RefreshFpgaAsync();
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
@@ -501,7 +677,7 @@ namespace DDR4_TestingApp
         {
             if (IsDisposed) return;
             RefreshSyncStatus();
-            await RefreshFpgaImageAsync();
+            await RefreshFpgaAsync();
         }
 
         // ============================== Helpers ==============================

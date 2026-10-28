@@ -28,7 +28,7 @@
 //!
 //! Usage:
 //!     gpio::init()?;                                    // once, at startup
-//!     let active   = gpio::get_beam_active();             // hot path
+//!     let active   = gpio::get_beam_present();             // hot path
 //!     let possible = gpio::get_beam_possible();           // hot path
 //!     let cal      = gpio::get_calibration_signal();      // hot path
 //!     let ui_clk   = gpio::get_ui_clock_signal();         // hot path
@@ -118,7 +118,7 @@ mod backend {
 
     /// Line offsets within the chip for each EMIO channel. MIO 0..=77, then
     /// EMIO begins at 78. Verify with `gpioinfo`.
-    const BEAM_ACTIVE_LINE_OFFSET: u32 = 78;
+    const beam_present_LINE_OFFSET: u32 = 78;
     const BEAM_POSSIBLE_LINE_OFFSET: u32 = 79;
     const CALIBRATION_LINE_OFFSET: u32 = 80;
     const UI_CLOCK_LINE_OFFSET: u32 = 81;
@@ -128,7 +128,7 @@ mod backend {
     const CLAMP_REQUEST_LINE_OFFSET: u32 = 88;
 
     /// Consumer labels that show up in `gpioinfo` so it's clear who holds each line.
-    const BEAM_ACTIVE_CONSUMER: &str = "ddr4-tester-beam-active";
+    const beam_present_CONSUMER: &str = "ddr4-tester-beam-active";
     const BEAM_POSSIBLE_CONSUMER: &str = "ddr4-tester-beam-possible";
     const CALIBRATION_CONSUMER: &str = "ddr4-tester-calibration";
     const UI_CLOCK_CONSUMER: &str = "ddr4-tester-ui-clock";
@@ -164,7 +164,7 @@ mod backend {
     static CLAMP_ASSERTED: AtomicBool = AtomicBool::new(false);
 
     struct GpioLines {
-        beam_active: LineHandle,
+        beam_present: LineHandle,
         beam_possible: LineHandle,
         calibration: LineHandle,
         ui_clock: LineHandle,
@@ -192,7 +192,7 @@ mod backend {
     /// override any of them without recompiling — e.g. if `gpioinfo` shows a
     /// different base on your kernel — set the corresponding environment
     /// variable:
-    ///     BEAM_ACTIVE_GPIO_LINE, BEAM_POSSIBLE_GPIO_LINE,
+    ///     beam_present_GPIO_LINE, BEAM_POSSIBLE_GPIO_LINE,
     ///     CALIBRATION_GPIO_LINE, UI_CLOCK_GPIO_LINE, PL_CLOCK_GPIO_LINE,
     ///     FPGA_LOADED_GPIO_LINE, SDRAM_SELECT0_GPIO_LINE ..
     ///     SDRAM_SELECT3_GPIO_LINE, CLAMP_REQUEST_GPIO_LINE
@@ -203,8 +203,8 @@ mod backend {
 
         let mut chip = Chip::new(GPIO_CHIP)?;
 
-        let beam_active_offset =
-            line_offset_from_env("BEAM_ACTIVE_GPIO_LINE", BEAM_ACTIVE_LINE_OFFSET);
+        let beam_present_offset =
+            line_offset_from_env("beam_present_GPIO_LINE", beam_present_LINE_OFFSET);
         let beam_possible_offset =
             line_offset_from_env("BEAM_POSSIBLE_GPIO_LINE", BEAM_POSSIBLE_LINE_OFFSET);
         let calibration_offset =
@@ -216,9 +216,9 @@ mod backend {
         let clamp_request_offset =
             line_offset_from_env("CLAMP_REQUEST_GPIO_LINE", CLAMP_REQUEST_LINE_OFFSET);
 
-        let beam_active = chip
-            .get_line(beam_active_offset)?
-            .request(LineRequestFlags::INPUT, 0, BEAM_ACTIVE_CONSUMER)?;
+        let beam_present = chip
+            .get_line(beam_present_offset)?
+            .request(LineRequestFlags::INPUT, 0, beam_present_CONSUMER)?;
         let beam_possible = chip
             .get_line(beam_possible_offset)?
             .request(LineRequestFlags::INPUT, 0, BEAM_POSSIBLE_CONSUMER)?;
@@ -259,7 +259,7 @@ mod backend {
         CLAMP_ASSERTED.store(false, Ordering::SeqCst);
 
         let lines = GpioLines {
-            beam_active,
+            beam_present,
             beam_possible,
             calibration,
             ui_clock,
@@ -308,7 +308,7 @@ mod backend {
     /// poll loop running against an uninitialized line is a programming error,
     /// and a panic surfaces it immediately rather than silently returning a
     /// bogus `false`.
-    pub fn get_beam_active() -> bool {
+    pub fn get_beam_present() -> bool {
         if crate::config::SIMULATION_MODE {
             return false;
         }
@@ -316,7 +316,7 @@ mod backend {
         // A read failure here is unexpected for an already-acquired input line;
         // treat it as "not high" rather than panicking on the hot path. Adjust
         // to taste if you'd rather propagate the error.
-        matches!(lines().beam_active.get_value(), Ok(1))
+        matches!(lines().beam_present.get_value(), Ok(1))
     }
 
     // -------------------------------------------------------------------
@@ -326,16 +326,16 @@ mod backend {
     /// Return `true` if the Beam Possible GPIO reads high, i.e. the facility
     /// is in a state where beam could be delivered (shutters/interlocks permit
     /// it), whether or not beam is actually on target — for that, see
-    /// `get_beam_active`.
+    /// `get_beam_present`.
     ///
     /// Hot path: designed to be polled very often. After `init()`, this is a
     /// single `get_value` ioctl on an already-open line.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn get_beam_possible() -> bool {
-        // Mirrors get_beam_active(): in simulation there is no facility, so
+        // Mirrors get_beam_present(): in simulation there is no facility, so
         // neither beam signal is ever asserted. Flip this to `true` if your
         // sim runs need to exercise an arm-while-beam-permitted path.
         if crate::config::SIMULATION_MODE {
@@ -356,7 +356,7 @@ mod backend {
     /// single `get_value` ioctl on an already-open line.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn get_calibration_signal() -> bool {
         if crate::config::SIMULATION_MODE {
@@ -380,7 +380,7 @@ mod backend {
     /// single `get_value` ioctl on an already-open line.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn get_ui_clock_signal() -> bool {
         if crate::config::SIMULATION_MODE {
@@ -404,7 +404,7 @@ mod backend {
     /// single `get_value` ioctl on an already-open line.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn get_pl_clock_signal() -> bool {
         if crate::config::SIMULATION_MODE {
@@ -425,7 +425,7 @@ mod backend {
     /// single `get_value` ioctl on an already-open line.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn get_fpga_loaded_status() -> bool {
         if crate::config::SIMULATION_MODE {
@@ -446,7 +446,7 @@ mod backend {
     ///
     /// # Panics
     /// Panics if `index >= SDRAM_SELECT_COUNT`, or if called before a
-    /// successful `init()`. See `get_beam_active` for rationale.
+    /// successful `init()`. See `get_beam_present` for rationale.
     pub fn get_sdram_select(index: usize) -> bool {
         assert!(
             index < SDRAM_SELECT_COUNT,
@@ -516,7 +516,7 @@ mod backend {
     /// recorded so `get_clamp_request()` stays consistent.
     ///
     /// # Panics
-    /// Panics if called before a successful `init()`. See `get_beam_active`
+    /// Panics if called before a successful `init()`. See `get_beam_present`
     /// for rationale.
     pub fn set_clamp_request(assert: bool) -> Result<(), GpioError> {
         if crate::config::SIMULATION_MODE {
@@ -579,7 +579,7 @@ mod backend {
         Ok(())
     }
 
-    pub fn get_beam_active() -> bool {
+    pub fn get_beam_present() -> bool {
         false
     }
 
@@ -646,7 +646,7 @@ pub use backend::*;
 /// Deprecated alias kept so existing call sites don't break with the new
 /// EMIO map, which splits the old single "Beam Signal" into Beam Active
 /// (bit 0) and Beam Possible (bit 1).
-#[deprecated(note = "renamed to get_beam_active(); see also get_beam_possible()")]
+#[deprecated(note = "renamed to get_beam_present(); see also get_beam_possible()")]
 pub fn get_beam_signal() -> bool {
-    get_beam_active()
+    get_beam_present()
 }

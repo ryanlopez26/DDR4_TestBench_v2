@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
-using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -16,6 +15,28 @@ using System.Windows.Forms;
 
 namespace DDR4_TestingApp
 {
+    /// <summary>
+    /// Status dashboard and hardware supervisor for the ZCU test bench.
+    ///
+    /// It owns TWO relay channels on the same USB relay board:
+    ///
+    ///   * POWER  — the contactor feeding the ZCU104. Driven from
+    ///     GetPowerModeRsp.request_poweroff / request_reboot, which the server only
+    ///     raises once the task engine has unmounted /dvr and marked itself safe.
+    ///
+    ///   * BEAM   — the facility beam-enable / clamp interlock. Driven from
+    ///     GetPowerModeRsp.request_beam, the flag the engine's Dynamic and Expose
+    ///     arms raise through set_beam_request() when they want beam on target.
+    ///
+    /// Both arrive in the same GETPOWERMODE reply, so one 150 ms poll services both
+    /// and the same heartbeat keeps InfoRsp.PowerServicesProvided fresh.
+    ///
+    /// The two differ in exactly one respect, deliberately: their fail-safe
+    /// direction. With no link the contactor assumes the board WANTS power — a ZCU
+    /// that has lost comms still needs to finish booting and reconnect. With no link
+    /// the beam relay drops. Beam that nothing is watching is beam that gets turned
+    /// off. See ComputeDesiredPower / ComputeDesiredBeam.
+    /// </summary>
     public partial class Launcher : Form
     {
         // ====================== Cadences ======================
@@ -24,19 +45,20 @@ namespace DDR4_TestingApp
         private static readonly TimeSpan InfoPollInterval = TimeSpan.FromMilliseconds(500);
 
         /// <summary>
-        /// Deliberately slow. EngineStatusRsp embeds the entire in-flight Record, log
-        /// arrays included, so during a long dynamic run each poll moves megabytes and
-        /// the server holds STATUS.read() across the clone, the serialize and the socket
-        /// write. At 500 ms that starved the 150 ms power poll of the shared send lock
-        /// and blinked POWER SERVICES.
+        /// Used to be five seconds because EngineStatusRsp embedded the whole in-flight
+        /// Record, log arrays included, and the server held STATUS.read() across the
+        /// clone, the serialize and the socket write — which starved the 150 ms power
+        /// poll of the shared send lock and blinked POWER SERVICES. The server now
+        /// sends only Option&lt;RecordType&gt;, a progress number, the idle flag and the
+        /// pending queue, so a poll is about twenty bytes and this can be brisk again.
         /// </summary>
-        private static readonly TimeSpan EnginePollInterval = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan EnginePollInterval = TimeSpan.FromMilliseconds(750);
 
         private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
         private const int ReconnectMaxAttempts = 180;        // 5 s x 180 = 15 minutes
 
-        /// <summary>Relay state is re-read this often so the pill shows reality, not intent.</summary>
-        private static readonly TimeSpan ContactorVerifyInterval = TimeSpan.FromSeconds(1);
+        /// <summary>Relay state is re-read this often so the pills show reality, not intent.</summary>
+        private static readonly TimeSpan RelayVerifyInterval = TimeSpan.FromSeconds(1);
 
         /// <summary>Half-period of the restart flash.</summary>
         private const long FlashPeriodMs = 400;
@@ -58,14 +80,22 @@ namespace DDR4_TestingApp
         /// <summary>Accepted by the server but not yet acted on by the task engine.</summary>
         private static readonly Color RequestedColor = Color.FromArgb(0xD6, 0x89, 0x10);
 
+        /// <summary>A request the operator's override is deliberately ignoring.</summary>
+        private static readonly Color OverriddenColor = Color.FromArgb(0xD6, 0x89, 0x10);
+
+        /// <summary>Misconfiguration, not a hardware state.</summary>
+        private static readonly Color FaultColor = Color.FromArgb(0x8E, 0x44, 0xAD);
+
         private static readonly Color ModeSelected = TrueColor;
         private static readonly Color ModeUnselected = Color.Black;
 
-        // ====================== Power state ======================
+        // ====================== Modes ======================
 
         private enum OverrideMode { Off, Auto, On }
 
-        private OverrideMode overrideMode = OverrideMode.Auto;
+        // ====================== Power state ======================
+
+        private OverrideMode powerMode = OverrideMode.Auto;
 
         /// <summary>
         /// Set when a poweroff request has been honoured. Only the ON button clears it.
@@ -99,15 +129,53 @@ namespace DDR4_TestingApp
         /// </summary>
         private bool rebootArmed = true;
 
-        /// <summary>Contactor state the manager wants. Closed (power flowing) by default.</summary>
-        private bool contactorDesired = true;
+        // ====================== Beam state ======================
 
-        /// <summary>Last state read back from the relay, or null when no board is present.</summary>
-        private bool? contactorActual;
+        private OverrideMode beamMode = OverrideMode.Auto;
+
+        /// <summary>
+        /// request_beam from the last GETPOWERMODE reply. Reset to false the moment the
+        /// link is known to be down — see ComputeDesiredBeam for why this one does not
+        /// get the benefit of the doubt that the contactor does.
+        /// </summary>
+        private bool beamRequested;
+
+        /// <summary>True while the two relay channels are set to the same index.</summary>
+        private bool relayChannelConflict;
+
+        // ====================== Relay state ======================
+
+        /// <summary>Relay state each channel is being driven to.</summary>
+        private bool powerDesired = true;      // contactor closed (power flowing) by default
+        private bool beamDesired;              // beam blocked by default
+
+        /// <summary>Last state read back, or null when no board / no channel is present.</summary>
+        private bool? powerActual;
+        private bool? beamActual;
 
         private string? relaySerial;
         private DateTime lastRelayScanUtc = DateTime.MinValue;
-        private DateTime lastContactorVerifyUtc = DateTime.MinValue;
+        private DateTime lastRelayVerifyUtc = DateTime.MinValue;
+
+        /// <summary>
+        /// Beam channel config as of the last service pass. Cached rather than re-read
+        /// on shutdown: FormClosed runs on the way into Dispose, and reading
+        /// NumericUpDown.Value from there can land on a disposed control.
+        /// </summary>
+        private int? lastBeamChannel;
+        private bool lastBeamInvert;
+
+        /// <summary>
+        /// Serializes USB access. Both channels live on one HID device and the library
+        /// is not reentrant, so the two are driven inside a single worker pass rather
+        /// than from two tasks.
+        /// </summary>
+        private readonly SemaphoreSlim relayLock = new SemaphoreSlim(1, 1);
+
+        // ====================== Engine state ======================
+
+        /// <summary>Mirrors EngineStatus.IsIdle, inverted. Read by the power-request dialog.</summary>
+        private bool engineBusy;
 
         // ====================== Connection state ======================
 
@@ -121,6 +189,9 @@ namespace DDR4_TestingApp
         // ====================== Cancellation ======================
 
         private CancellationTokenSource? loopCts;
+        private bool loopsStarted;
+
+        private Button[]? statusPills;
 
         // ====================== Construction ======================
 
@@ -136,16 +207,31 @@ namespace DDR4_TestingApp
             abortButton.Click += AbortButton_Click;
             requestOff.Click += async (s, e) => await RequestPowerStateAsync(PowerRequest.Shutdown);
             requestReboot.Click += async (s, e) => await RequestPowerStateAsync(PowerRequest.Reboot);
-            powerOn.Click += (s, e) => SetOverrideMode(OverrideMode.On);
-            powerAUTO.Click += (s, e) => SetOverrideMode(OverrideMode.Auto);
-            powerOFF.Click += (s, e) => SetOverrideMode(OverrideMode.Off);
 
+            powerOn.Click += (s, e) => SetPowerMode(OverrideMode.On);
+            powerAUTO.Click += (s, e) => SetPowerMode(OverrideMode.Auto);
+            powerOFF.Click += (s, e) => SetPowerMode(OverrideMode.Off);
+
+            beamOn.Click += (s, e) => SetBeamMode(OverrideMode.On);
+            beamAUTO.Click += (s, e) => SetBeamMode(OverrideMode.Auto);
+            beamOFF.Click += (s, e) => SetBeamMode(OverrideMode.Off);
+
+            relayID_power.ValueChanged += (s, e) => CheckRelayChannels();
+            relayID_beam.ValueChanged += (s, e) => CheckRelayChannels();
+
+            FormClosing += Launcher_FormClosing;
             FormClosed += Launcher_FormClosed;
             Shown += Launcher_Shown;
         }
 
         private void Launcher_Shown(object? sender, EventArgs e)
         {
+            // Shown fires again on every Hide()/Show() cycle. Without this guard a
+            // second pass would spawn a duplicate set of pollers, each holding the
+            // send lock in turn and halving the effective cadence of the others.
+            if (loopsStarted) return;
+            loopsStarted = true;
+
             loopCts = new CancellationTokenSource();
             CancellationToken ct = loopCts.Token;
 
@@ -155,40 +241,83 @@ namespace DDR4_TestingApp
             _ = ReconnectLoopAsync(ct);
         }
 
+        private void Launcher_FormClosing(object? sender, FormClosingEventArgs e)
+        {
+            // Closing drops the beam relay (see Launcher_FormClosed). Say so while the
+            // beam is actually enabled rather than letting it happen silently.
+            if (beamActual == true && e.CloseReason == CloseReason.UserClosing)
+            {
+                if (MessageBox.Show(
+                        "Beam is currently enabled.\n\nClosing the launcher releases the " +
+                        "beam relay, which blocks beam. The power contactor is left as-is.",
+                        "Close Launcher", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning)
+                    != DialogResult.OK)
+                {
+                    e.Cancel = true;
+                }
+            }
+        }
+
         private void Launcher_FormClosed(object? sender, FormClosedEventArgs e)
         {
             TcpManager.StatusChanged -= OnConnectionStatusChanged;
             loopCts?.Cancel();
+
+            // Best effort, on the UI thread: a few milliseconds of blocking USB on the
+            // way out is worth not leaving a beam interlock latched open with nothing
+            // supervising it. The contactor is deliberately NOT touched — cutting the
+            // board's power because somebody closed a window would be worse than
+            // leaving it running.
+            try
+            {
+                if (relaySerial != null && lastBeamChannel is int ch)
+                    UsbRelay.Set(relaySerial, ch, !lastBeamInvert);
+            }
+            catch { /* the board is gone, or HID is busy; nothing useful to do here */ }
         }
 
         private void ConfigureControls()
         {
+            statusPills = new[]
+            {
+                psStatus, fpgaStatus, plStatus, uiStatus, calbStatus,
+                clampStatus, activeStatus, possibleStatus,
+                sdram0, sdram1, sdram2, sdram3,
+            };
+
             // Every indicator is a Button with Enabled = false. A disabled Button under
             // the default FlatStyle is painted by the themed renderer, which ignores
             // BackColor entirely — Flat is what makes any of these colours appear.
-            foreach (var pill in StatusPills().Concat(new[] { idleStatus, powerStatus,
-                                                             contactorStatus, powerOn,
-                                                             powerAUTO, powerOFF }))
+            var flat = statusPills.Concat(new[]
+            {
+                idleStatus, powerStatus, contactorStatus,
+                beamRequestStatus, beamRelayStatus,
+                powerOn, powerAUTO, powerOFF,
+                beamOn, beamAUTO, beamOFF,
+            });
+
+            foreach (var pill in flat)
             {
                 pill.FlatStyle = FlatStyle.Flat;
                 pill.FlatAppearance.BorderSize = 0;
                 pill.ForeColor = Color.White;
             }
 
-            foreach (var pill in StatusPills())
+            foreach (var pill in statusPills)
             {
                 pill.Enabled = false;
                 pill.TabStop = false;
             }
-            idleStatus.Enabled = false;
-            idleStatus.TabStop = false;
-            powerStatus.Enabled = false;
-            powerStatus.TabStop = false;
-            contactorStatus.Enabled = false;
-            contactorStatus.TabStop = false;
+
+            foreach (var pill in new[] { idleStatus, powerStatus, contactorStatus,
+                                         beamRequestStatus, beamRelayStatus })
+            {
+                pill.Enabled = false;
+                pill.TabStop = false;
+            }
 
             // Mode buttons stay clickable; black unselected, green selected.
-            foreach (var b in new[] { powerOn, powerAUTO, powerOFF })
+            foreach (var b in new[] { powerOn, powerAUTO, powerOFF, beamOn, beamAUTO, beamOFF })
                 b.FlatAppearance.MouseOverBackColor = Color.FromArgb(0x40, 0x40, 0x40);
 
             socketStatus.ForeColor = Color.Black;
@@ -197,41 +326,43 @@ namespace DDR4_TestingApp
             taskProgress.Maximum = 100;
             taskProgress.Style = ProgressBarStyle.Continuous;
 
-            // Designer defaults are Minimum 0 / Maximum 100, which would cap the restart
-            // delay at 100 ms and allow a relay index of 0 — index 0 is the board's
-            // serial-rewrite target, not a channel.
-            relayID.Minimum = 1;
-            relayID.Maximum = 8;
-            relayID.Value = 1;
-
-            restartDelay.Minimum = 100;
-            restartDelay.Maximum = 120000;
-            restartDelay.Value = 5000;
+            // Defensive: the designer now carries these ranges, but a careless re-save
+            // from the designer surface drops back to Minimum 0 / Maximum 100, which
+            // would cap the restart delay at 100 ms and allow a relay index of 0 —
+            // index 0 is the board's serial-rewrite target, not a channel. Maximum is
+            // raised before Minimum so neither assignment clamps the other.
+            ConfigureSpinner(relayID_power, min: 1, max: 8, value: relayID_power.Value);
+            ConfigureSpinner(relayID_beam, min: 1, max: 8, value: relayID_beam.Value);
+            ConfigureSpinner(restartDelay, min: 100, max: 120000, value: restartDelay.Value);
 
             abortButton.Enabled = false;
             requestOff.Enabled = false;
             requestReboot.Enabled = false;
 
+            CheckRelayChannels();
+
             ApplyEngineOffline();
             ApplyInfoOffline();
             ApplyModeButtons();
             PaintPowerStatus();
-            PaintContactor();
+            PaintBeamStatus();
+            PaintRelays();
         }
 
-        private Button[] StatusPills() => new[]
+        private static void ConfigureSpinner(NumericUpDown spin, decimal min, decimal max, decimal value)
         {
-            psStatus, fpgaStatus, plStatus, uiStatus, calbStatus,
-            clampStatus, activeStatus, possibleStatus,
-            sdram0, sdram1, sdram2, sdram3,
-        };
+            spin.Maximum = max;
+            spin.Minimum = min;
+            spin.Value = Math.Min(Math.Max(value, min), max);
+        }
+
+        private Button[] StatusPills() => statusPills ?? Array.Empty<Button>();
 
         // ====================== Apps ======================
 
         private void launchRunEditor_Click(object sender, EventArgs e) => new RunEditor().Show(this);
         private void configEditor_Click(object sender, EventArgs e) => new ConfigEditor().Show(this);
         private void launchRecordManager_Click(object sender, EventArgs e) => new RecordManager().Show(this);
-        private void button6_Click(object sender, EventArgs e) { }
 
         // ====================== Connection ======================
 
@@ -329,7 +460,17 @@ namespace DDR4_TestingApp
             CM_ip.Enabled = !connected;
             CM_port.Enabled = !connected;
 
-            if (!connected) ApplyInfoOffline();
+            if (!connected)
+            {
+                ApplyInfoOffline();
+
+                // The beam request does not survive the link. Dropping it here as well
+                // as in ComputeDesiredBeam means the pill stops claiming REQUESTED the
+                // instant the socket dies, rather than at the next poll.
+                beamRequested = false;
+                PaintBeamStatus();
+            }
+
             UpdateSocketStatus();
         }
 
@@ -398,11 +539,11 @@ namespace DDR4_TestingApp
             }
         }
 
-        // ====================== Power management ======================
+        // ====================== Mode buttons ======================
 
-        private void SetOverrideMode(OverrideMode mode)
+        private void SetPowerMode(OverrideMode mode)
         {
-            overrideMode = mode;
+            powerMode = mode;
 
             // ON is the only thing that clears a honoured shutdown, by design: AUTO
             // alone would let the assume-power default re-energise a board that was
@@ -417,6 +558,56 @@ namespace DDR4_TestingApp
             ApplyModeButtons();
             PaintPowerStatus();
         }
+
+        private void SetBeamMode(OverrideMode mode)
+        {
+            // Forcing beam on from the UI bypasses every interlock the test software
+            // provides. It is here because bench work needs it, but it should not be
+            // one misclick away.
+            //if (mode == OverrideMode.On && beamMode != OverrideMode.On)
+            //{
+            //    if (MessageBox.Show(
+            //            "Force the beam relay closed?\n\n" +
+            //            "This asserts beam-enable regardless of what the ZCU is asking " +
+            //            "for, and holds it asserted even if the link drops or a task " +
+            //            "aborts. The ZCU's own clamp line is NOT changed, so the CLAMP " +
+            //            "indicator will disagree with this relay.",
+            //            "Force Beam On", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+            //        != DialogResult.Yes)
+            //        return;
+            //}
+
+            beamMode = mode;
+            ApplyModeButtons();
+            PaintBeamStatus();
+        }
+
+        private void ApplyModeButtons()
+        {
+            SetPill(powerOn, "ON", powerMode == OverrideMode.On ? ModeSelected : ModeUnselected);
+            SetPill(powerAUTO, "AUTO", powerMode == OverrideMode.Auto ? ModeSelected : ModeUnselected);
+            SetPill(powerOFF, "OFF", powerMode == OverrideMode.Off ? ModeSelected : ModeUnselected);
+
+            SetPill(beamOn, "ON", beamMode == OverrideMode.On ? ModeSelected : ModeUnselected);
+            SetPill(beamAUTO, "AUTO", beamMode == OverrideMode.Auto ? ModeSelected : ModeUnselected);
+            SetPill(beamOFF, "OFF", beamMode == OverrideMode.Off ? ModeSelected : ModeUnselected);
+        }
+
+        /// <summary>
+        /// Both channels sit on one relay board, so the same index for both would have
+        /// the power and beam rules fighting over one coil at 150 ms. Detect it and
+        /// refuse to drive either rather than let them chatter.
+        /// </summary>
+        private void CheckRelayChannels()
+        {
+            bool conflict = (int)relayID_power.Value == (int)relayID_beam.Value;
+            if (conflict == relayChannelConflict) return;
+
+            relayChannelConflict = conflict;
+            PaintRelays();
+        }
+
+        // ====================== Power requests ======================
 
         /// <summary>
         /// Ask the ZCU to enter a power state (CMD_REQUESTPOWERSTATE). The server only
@@ -434,10 +625,10 @@ namespace DDR4_TestingApp
                 return;
             }
 
-            if (overrideMode != OverrideMode.Auto)
+            if (powerMode != OverrideMode.Auto)
             {
                 MessageBox.Show(
-                    $"Manual override is set to {overrideMode.ToString().ToUpperInvariant()}, " +
+                    $"Power override is set to {powerMode.ToString().ToUpperInvariant()}, " +
                     "so the contactor will not follow this request. Switch to AUTO first.",
                     "Power Request", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -448,20 +639,18 @@ namespace DDR4_TestingApp
             // The engine only reaches the power check between tasks, so a request made
             // mid-run waits for that run to finish. Say so rather than let the operator
             // conclude the button is broken.
-            bool busy = abortButton.Enabled;   // tracks "engine not idle"
-            string wait = busy
-                ? "A task is currently running. The ZCU will not act on this until " +
+            string wait = engineBusy
+                ? "\n\nA task is currently running. The ZCU will not act on this until " +
                   "that task finishes — abort it first if you need the change now."
                 : "";
 
             string consequence = state == PowerRequest.Shutdown
-                ? "The contactor will open and STAY open. Power is restored only by " +
+                ? "\n\nThe contactor will open and STAY open. Power is restored only by " +
                   "pressing ON."
-                : $"The contactor will open for {restartDelay.Value} ms and then close.";
+                : $"\n\nThe contactor will open for {restartDelay.Value} ms and then close.";
 
             if (MessageBox.Show(
-                    $"Ask the ZCU to {verb}?" +
-                    $"{ consequence}{ wait}",
+                    $"Ask the ZCU to {verb}?{consequence}{wait}",
                     "Power Request", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
                 != DialogResult.Yes)
                 return;
@@ -505,17 +694,13 @@ namespace DDR4_TestingApp
             }
         }
 
-        private void ApplyModeButtons()
-        {
-            SetPill(powerOn, "ON", overrideMode == OverrideMode.On ? ModeSelected : ModeUnselected);
-            SetPill(powerAUTO, "AUTO", overrideMode == OverrideMode.Auto ? ModeSelected : ModeUnselected);
-            SetPill(powerOFF, "OFF", overrideMode == OverrideMode.Off ? ModeSelected : ModeUnselected);
-        }
+        // ====================== Power / beam loop ======================
 
         /// <summary>
-        /// Runs at 150 ms, which is also what keeps the server's power-services
-        /// heartbeat fresh — it stamps a timestamp on every GETPOWERMODE and reports
-        /// whether that stamp is recent through InfoRsp.PowerServicesProvided.
+        /// Runs at 150 ms and services both relays from one GETPOWERMODE reply. The same
+        /// call keeps the server's power-services heartbeat fresh — it stamps a
+        /// timestamp on every GETPOWERMODE and reports it back through
+        /// InfoRsp.PowerServicesProvided.
         /// </summary>
         private async Task PowerLoopAsync(CancellationToken ct)
         {
@@ -529,7 +714,9 @@ namespace DDR4_TestingApp
                     {
                         PowerMode pm = await TcpManager.GetPowerModeAsync(ct);
                         if (ct.IsCancellationRequested || IsDisposed) return;
+
                         HandlePowerRequest(pm);
+                        HandleBeamRequest(pm);
                     }
                     catch (OperationCanceledException) { return; }
                     catch (Exception ex) when (IsConnectionFault(ex))
@@ -537,16 +724,24 @@ namespace DDR4_TestingApp
                         // The link dropping is not a power event. Whatever state the
                         // contactor is in stays, and the timers below keep running —
                         // which is what lets a restart finish after the board has gone.
+                        //
+                        // The beam relay is the exception: a request we can no longer
+                        // confirm is a request we stop honouring.
+                        beamRequested = false;
                     }
                 }
-
-                await ServiceContactorAsync(ct);
-
-                if (!IsDisposed)
+                else
                 {
-                    PaintPowerStatus();
-                    PaintContactor();
+                    beamRequested = false;
                 }
+
+                await ServiceRelaysAsync(ct);
+
+                if (ct.IsCancellationRequested || IsDisposed) return;
+
+                PaintPowerStatus();
+                PaintBeamStatus();
+                PaintRelays();
 
                 try { await Task.Delay(PowerPollInterval, ct); }
                 catch (OperationCanceledException) { return; }
@@ -575,7 +770,7 @@ namespace DDR4_TestingApp
             // ON and OFF forcibly override, so requests are only acted on in AUTO. The
             // server parks with the flag set, so a request arriving while forced is not
             // lost — it is honoured on the first AUTO poll instead.
-            if (overrideMode != OverrideMode.Auto) return;
+            if (powerMode != OverrideMode.Auto) return;
 
             if (pm.RequestPoweroff)
             {
@@ -594,10 +789,22 @@ namespace DDR4_TestingApp
             }
         }
 
-        /// <summary>Contactor state the current mode and latches call for.</summary>
-        private bool ComputeDesiredContactor()
+        /// <summary>
+        /// request_beam is a LIVE signal, not a one-shot event like the two power flags,
+        /// so there is nothing to latch or arm here. The engine raises it through
+        /// set_beam_request() when a Dynamic or Expose task wants beam and drops it when
+        /// the task ends, a SEFI is detected, or the exposure limit is hit. The relay
+        /// follows it directly.
+        /// </summary>
+        private void HandleBeamRequest(PowerMode pm)
         {
-            switch (overrideMode)
+            beamRequested = pm.RequestBeam;
+        }
+
+        /// <summary>Contactor state the current power mode and latches call for.</summary>
+        private bool ComputeDesiredPower()
+        {
+            switch (powerMode)
             {
                 case OverrideMode.On: return true;
                 case OverrideMode.Off: return false;
@@ -619,53 +826,145 @@ namespace DDR4_TestingApp
             }
         }
 
-        private async Task ServiceContactorAsync(CancellationToken ct)
+        /// <summary>
+        /// Beam-enable state the current beam mode calls for.
+        ///
+        /// Note the fail-safe runs the OTHER WAY from ComputeDesiredPower. With no link
+        /// the contactor assumes power is wanted, because a board that has lost comms
+        /// still has to finish booting. With no link the beam relay opens, because
+        /// nothing is left to drop it when the exposure limit is reached or a SEFI
+        /// appears. beamRequested is already forced false on every path that notices the
+        /// link is gone; the explicit check here covers the window before the first poll
+        /// and any state the event handler has not seen yet.
+        /// </summary>
+        private bool ComputeDesiredBeam()
         {
-            bool desired = ComputeDesiredContactor();
-            bool changed = desired != contactorDesired;
-            contactorDesired = desired;
+            switch (beamMode)
+            {
+                case OverrideMode.On: return true;
+                case OverrideMode.Off: return false;
+
+                default:
+                    if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
+                        return false;
+                    return beamRequested;
+            }
+        }
+
+        private async Task ServiceRelaysAsync(CancellationToken ct)
+        {
+            bool wantPower = ComputeDesiredPower();
+            bool wantBeam = ComputeDesiredBeam();
+
+            bool changed = wantPower != powerDesired || wantBeam != beamDesired;
+            powerDesired = wantPower;
+            beamDesired = wantBeam;
 
             DateTime now = DateTime.UtcNow;
-            bool verifyDue = now - lastContactorVerifyUtc >= ContactorVerifyInterval;
+            bool verifyDue = now - lastRelayVerifyUtc >= RelayVerifyInterval;
 
             if (!changed && !verifyDue) return;
 
-            int channel = (int)relayID.Value;
-            bool invert = invertRelay.Checked;
+            if (relayChannelConflict)
+            {
+                // Both pills already say CH CONFLICT; driving nothing is the safe
+                // reading of an ambiguous configuration.
+                powerActual = null;
+                beamActual = null;
+                lastRelayVerifyUtc = now;
+                return;
+            }
 
-            // USB control transfers block for a few milliseconds; keep them off the UI
-            // thread so the 150 ms cadence doesn't jitter when the board is slow.
-            var result = await Task.Run(() => ApplyContactor(channel, desired, invert, changed), ct)
-                                   .ConfigureAwait(true);
+            // Read the config on the UI thread — NumericUpDown and CheckBox are not
+            // safe to touch from the worker.
+            int powerChannel = (int)relayID_power.Value;
+            int beamChannel = (int)relayID_beam.Value;
+            bool powerInvert = invertRelay_power.Checked;
+            bool beamInvert = invertRelay_beam.Checked;
+
+            lastBeamChannel = beamChannel;
+            lastBeamInvert = beamInvert;
+
+            // USB control transfers block for a few milliseconds each and the HID
+            // handle is not reentrant, so both channels are driven inside one worker
+            // pass behind one lock. Keeping it off the UI thread is what stops the
+            // 150 ms cadence from jittering when the board is slow.
+            if (!await relayLock.WaitAsync(0, ct).ConfigureAwait(true))
+                return;   // a previous pass is still in flight; skip this tick
+
+            (bool? power, bool? beam) result;
+            try
+            {
+                result = await Task.Run(() => ApplyRelays(
+                        powerChannel, wantPower, powerInvert,
+                        beamChannel, wantBeam, beamInvert,
+                        changed), ct)
+                    .ConfigureAwait(true);
+            }
+            finally
+            {
+                relayLock.Release();
+            }
 
             if (ct.IsCancellationRequested || IsDisposed) return;
 
-            contactorActual = result;
-            lastContactorVerifyUtc = now;
+            powerActual = result.power;
+            beamActual = result.beam;
+            lastRelayVerifyUtc = now;
         }
 
         /// <summary>
-        /// Drive and read back one channel. Returns the contactor state actually
-        /// observed, or null when no board is attached.
-        ///
-        /// Invert maps the rail's wiring to the relay coil. Unchecked means the rail is
-        /// on the NC contacts, which conduct when the coil is NOT energised, so power on
-        /// = relay off. Checked means the rail is on NO, which conducts when energised,
-        /// so power on = relay on. Both directions reduce to one XNOR.
+        /// Drive and read back both channels in one pass. Returns the state actually
+        /// observed on each, or null when no board is attached or that channel could not
+        /// be reached. Runs on a worker thread — touch no controls from here.
         /// </summary>
-        private bool? ApplyContactor(int channel, bool wantPower, bool invert, bool force)
+        private (bool? power, bool? beam) ApplyRelays(
+            int powerChannel, bool wantPower, bool powerInvert,
+            int beamChannel, bool wantBeam, bool beamInvert,
+            bool force)
         {
             if (relaySerial == null)
             {
                 // Rescan occasionally so a board plugged in after launch is picked up.
-                if (DateTime.UtcNow - lastRelayScanUtc < TimeSpan.FromSeconds(2)) return null;
+                if (DateTime.UtcNow - lastRelayScanUtc < TimeSpan.FromSeconds(2))
+                    return (null, null);
                 lastRelayScanUtc = DateTime.UtcNow;
 
                 relaySerial = UsbRelay.Enumerate().FirstOrDefault()?.Serial;
-                if (relaySerial == null) return null;
+                if (relaySerial == null) return (null, null);
             }
 
-            bool energise = wantPower == invert;
+            bool? power = DriveChannel(powerChannel, wantPower, powerInvert, force);
+
+            // If the power channel lost the board, relaySerial is already null and a
+            // beam attempt would only throw. Report both as unknown and rescan next tick.
+            if (relaySerial == null) return (null, null);
+
+            bool? beam = DriveChannel(beamChannel, wantBeam, beamInvert, force);
+
+            return (power, beam);
+        }
+
+        /// <summary>
+        /// Drive and read back one channel. Returns the LOAD state observed (true =
+        /// energised load: contactor closed, or beam permitted), or null on failure.
+        ///
+        /// Invert maps the load's wiring to the relay coil. Unchecked means the load is
+        /// on the NC contacts, which conduct when the coil is NOT energised, so load on
+        /// = relay off. Checked means the load is on NO, which conducts when energised,
+        /// so load on = relay on. Both directions reduce to one XNOR, and the mapping is
+        /// its own inverse.
+        ///
+        /// For the BEAM channel, NO wiring (Invert checked) is the right choice and is
+        /// the designer default: a relay board that is unplugged, unpowered or hung
+        /// leaves the coil de-energised, which on NO blocks beam. On NC the same failure
+        /// would permit it.
+        /// </summary>
+        private bool? DriveChannel(int channel, bool wantOn, bool invert, bool force)
+        {
+            if (relaySerial == null) return null;
+
+            bool energise = wantOn == invert;
 
             bool? energised = UsbRelay.IsOn(relaySerial, channel);
             if (energised == null)
@@ -681,12 +980,15 @@ namespace DDR4_TestingApp
                 energised = energise;
             }
 
-            // Same XNOR in reverse — the mapping is its own inverse.
             return energised.Value == invert;
         }
 
+        // ====================== Painting ======================
+
         private void PaintPowerStatus()
         {
+            if (IsDisposed) return;
+
             if (restartInProgress)
             {
                 bool flashOn = (Environment.TickCount64 / FlashPeriodMs) % 2 == 0;
@@ -700,7 +1002,7 @@ namespace DDR4_TestingApp
             {
                 // Accepted by the server but not yet honoured by the engine. Amber
                 // rather than red: nothing has moved yet and the contactor is still
-                // closed. Delete this branch if you only want the three states.
+                // closed.
                 SetPill(powerStatus,
                         pendingRequest == PowerRequest.Shutdown
                             ? "SHUTDOWN REQUESTED" : "RESTART REQUESTED",
@@ -712,14 +1014,61 @@ namespace DDR4_TestingApp
             }
         }
 
-        private void PaintContactor()
+        private void PaintBeamStatus()
         {
-            if (contactorActual == null)
+            if (IsDisposed) return;
+
+            // Forced modes are reported as forced, whatever the ZCU is asking for —
+            // the whole point of the override is that the request is being ignored.
+            if (beamMode == OverrideMode.On)
+            {
+                SetPill(beamRequestStatus, "FORCED ON", OverriddenColor);
+                return;
+            }
+
+            if (beamMode == OverrideMode.Off)
+            {
+                SetPill(beamRequestStatus,
+                        beamRequested ? "REQ BLOCKED" : "FORCED OFF",
+                        beamRequested ? OverriddenColor : ShutdownColor);
+                return;
+            }
+
+            if (TcpManager.Status != TcpManager.ConnectionStatus.Connected)
+            {
+                SetPill(beamRequestStatus, "NO LINK", OfflineColor);
+                return;
+            }
+
+            SetPill(beamRequestStatus,
+                    beamRequested ? "REQUESTED" : "NOT REQUESTED",
+                    beamRequested ? TrueColor : OperationalColor);
+        }
+
+        private void PaintRelays()
+        {
+            if (IsDisposed) return;
+
+            if (relayChannelConflict)
+            {
+                SetPill(contactorStatus, "CH CONFLICT", FaultColor);
+                SetPill(beamRelayStatus, "CH CONFLICT", FaultColor);
+                return;
+            }
+
+            if (powerActual == null)
                 SetPill(contactorStatus, "NO RELAY", OfflineColor);
             else
                 SetPill(contactorStatus,
-                        contactorActual.Value ? "CLOSED" : "OPEN",
-                        contactorActual.Value ? TrueColor : FalseColor);
+                        powerActual.Value ? "CLOSED" : "OPEN",
+                        powerActual.Value ? TrueColor : FalseColor);
+
+            if (beamActual == null)
+                SetPill(beamRelayStatus, "NO RELAY", OfflineColor);
+            else
+                SetPill(beamRelayStatus,
+                        beamActual.Value ? "ENABLED" : "CLAMPED",
+                        beamActual.Value ? TrueColor : FalseColor);
         }
 
         // ====================== Info polling ======================
@@ -758,12 +1107,14 @@ namespace DDR4_TestingApp
             SetBoolPill(uiStatus, "UI", info.UiClock);
             SetBoolPill(calbStatus, "CALIBRATED", info.ControllerCalibrated);
 
-            SetBoolPill(activeStatus, "ACTIVE", info.BeamActive);
+            SetBoolPill(activeStatus, "ACTIVE", info.BeamPresent);
             SetBoolPill(possibleStatus, "POSSIBLE", info.BeamPossible);
 
-            // Unlike every other pill here, this reflects an OUTPUT the server drives
-            // rather than a line it senses, so it reads back whatever was last
-            // commanded on the ZCU side.
+            // Unlike every other pill here, this reflects an OUTPUT the ZCU drives
+            // rather than a line it senses. It should track BEAM REQUEST: both come
+            // from set_beam_request(). If it disagrees, either the beam override is
+            // forced, or something has driven the clamp line out of band with
+            // CMD_CLAMPCMD, which bypasses the REQUEST_BEAM global.
             SetBoolPill(clampStatus, "CLAMP", info.ClampRequest);
 
             SetBoolPill(sdram0, "SDRAM 0", info.Sdram0);
@@ -827,14 +1178,35 @@ namespace DDR4_TestingApp
         private void ApplyEngineStatus(EngineStatus status)
         {
             // The engine pops a task off the queue before starting it, so the in-flight
-            // record is NOT counted here — Queue is strictly what is still pending.
+            // task is NOT counted here — Queue is strictly what is still pending.
             queueSize.Text = $"{status.Queue.Length} Task(s)";
 
-            taskName.Text = status.ActiveRecord == null
-                ? "NONE"
-                : status.ActiveRecord.Rtype.ToString().ToUpperInvariant();
+            // The reply no longer carries the running Record, only its TYPE, so there is
+            // no rid to show. It also only becomes non-null at the engine's first
+            // progress tick, which is up to 200 ms after the task starts — expect a
+            // brief "BUSY / NONE" overlap at the top of every task.
+            taskName.Text = status.CurrentRequestType.HasValue
+                ? status.CurrentRequestType.Value.ToString().ToUpperInvariant()
+                : "NONE";
 
-            SetProgress(status.ActiveRecord == null ? 0.0 : status.RecordProgress);
+            // An Expose task has no usable progress number: the engine divides seconds
+            // by milliseconds there, and reports a flat 0.5 when no exposure limit is
+            // configured. IsProgressKnown is false for it, and a bar parked at zero for
+            // a twenty-minute exposure reads as "stuck", so show marquee instead.
+            if (status.IsProgressKnown)
+            {
+                SetProgressStyle(ProgressBarStyle.Continuous);
+                SetProgress((status.NormalizedProgress ?? 0.0) * 100.0);
+            }
+            else if (status.CurrentRequestType == RecordType.Expose)
+            {
+                SetProgressStyle(ProgressBarStyle.Marquee);
+            }
+            else
+            {
+                SetProgressStyle(ProgressBarStyle.Continuous);
+                SetProgress(0.0);
+            }
 
             if (status.IsStalled)
             {
@@ -848,7 +1220,8 @@ namespace DDR4_TestingApp
                                     status.IsIdle ? IdleColor : BusyColor);
             }
 
-            abortButton.Enabled = !status.IsIdle;
+            engineBusy = !status.IsIdle;
+            abortButton.Enabled = engineBusy;
         }
 
         private void ApplyEngineOffline()
@@ -856,9 +1229,22 @@ namespace DDR4_TestingApp
             if (IsDisposed) return;
             queueSize.Text = "0 Task(s)";
             taskName.Text = "NONE";
+            SetProgressStyle(ProgressBarStyle.Continuous);
             SetProgress(0.0);
             SetPill(idleStatus, "OFFLINE", OfflineColor);
+            engineBusy = false;
             abortButton.Enabled = false;
+        }
+
+        /// <summary>
+        /// Switch the bar between a measured fraction and an indeterminate animation.
+        /// Guarded because assigning Style calls UpdateStyles() unconditionally, which
+        /// restarts the marquee animation — at a 750 ms poll that reads as a stutter.
+        /// </summary>
+        private void SetProgressStyle(ProgressBarStyle style)
+        {
+            if (taskProgress.Style == style) return;
+            taskProgress.Style = style;
         }
 
         private void SetProgress(double percent)
@@ -889,7 +1275,9 @@ namespace DDR4_TestingApp
             if (MessageBox.Show(
                     "Abort the task currently running?\n\nThe partial record is archived " +
                     "with its aborted flag set. The engine only notices at its next " +
-                    "progress tick, so this is not instantaneous.",
+                    "progress tick, so this is not instantaneous. An Expose or Dynamic " +
+                    "task also drops its beam request on the way out, which releases the " +
+                    "beam relay.",
                     "Abort Task", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
                 != DialogResult.Yes)
                 return;
@@ -915,5 +1303,6 @@ namespace DDR4_TestingApp
             || ex is SocketException
             || ex is InvalidDataException
             || ex is InvalidOperationException;
+
     }
 }
