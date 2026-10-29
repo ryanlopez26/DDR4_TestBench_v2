@@ -31,8 +31,31 @@ namespace DDR4_TestingApp
         private static readonly Random seedSource = new Random();
 
         /// <summary>
-        /// Byte values behind the "4 KB"… "1 GB" items shared by selectionSize and
-        /// blockSize. Index order must match the designer's Items.AddRange.
+        /// Byte values behind the size combo items. Index order must match the
+        /// designer's Items.AddRange.
+        ///
+        /// selectionSize offers all ten; blockSize offers only the first
+        /// <see cref="BlockSizeChoices"/>. The new entries are APPENDED for that
+        /// reason — indices 0-6 still mean the same thing to both combos, so
+        /// blockSize's designer item list did not have to change.
+        ///
+        /// WHY "4 GB" IS 0xFFFF_FFFF AND NOT 0x1_0000_0000. A full 4 GiB is one byte
+        /// past uint.MaxValue, and Program.selection_size is a uint. Representing it
+        /// honestly would mean making that global 64-bit, or giving this form its own
+        /// parallel extent and bypassing Config.updateCalculations() — either of which
+        /// puts a second path in the codebase for deriving NumBlocks. Clamping here
+        /// instead keeps the global as the single source of truth and confines the
+        /// whole change to this form.
+        ///
+        /// The cost is exactly ONE BLOCK off the top, because NumBlocks is
+        /// floor(selection / BlockSize). That is 1 MB at the default 1 MB block size,
+        /// but it scales with the block: at a 1 GB block size "4 GB" yields three
+        /// blocks and is indistinguishable from selecting "3 GB". The sampling pane
+        /// reports the shortfall so it is never silent.
+        ///
+        /// 4 GiB is the server's hard ceiling regardless. ram.rs maps
+        /// PL_DDR4_SIZE = 0x1_0000_0000 and asserts every offset below it, the engine's
+        /// addresses are u32, and ConfigCmd.Validate() rejects an extent past it.
         /// </summary>
         private static readonly uint[] SizeTable =
         {
@@ -43,7 +66,18 @@ namespace DDR4_TestingApp
             0x1000_0000,  // 256 MB
             0x2000_0000,  // 512 MB
             0x4000_0000,  // 1 GB
+            0x8000_0000,  // 2 GB
+            0xC000_0000,  // 3 GB
+            0xFFFF_FFFF,  // 4 GB, less one block — see above
         };
+
+        /// <summary>
+        /// How many leading SizeTable entries the blockSize combo offers. Everything
+        /// above 1 GB is selection-only: a block size at or beyond 2 GB would leave at
+        /// most two blocks in the extent, and 4 GB is not a representable block size
+        /// at all.
+        /// </summary>
+        private const int BlockSizeChoices = 7;
 
         /// <summary>
         /// The dataPattern combo reads ONES, ZEROS, PRNG — which is NOT the order of the
@@ -166,8 +200,8 @@ namespace DDR4_TestingApp
             loading = true;
             try
             {
-                selectionSize.SelectedIndex = IndexForSize(Program.selection_size);
-                blockSize.SelectedIndex = IndexForSize(Config.BlockSize);
+                SelectSize(selectionSize, Program.selection_size, SizeTable.Length);
+                SelectSize(blockSize, Config.BlockSize, BlockSizeChoices);
                 blockFactor.SelectedIndex = IndexForFactor(Config.BlockFactor);
 
                 dataPattern.SelectedIndex = Array.IndexOf(PatternByIndex, Config.Pattern);
@@ -265,13 +299,33 @@ namespace DDR4_TestingApp
                 $"Blocks Sampled: \t\t{Config.SampledBlocks}\n" +
                 $"Block Size: \t\t\t{Hex(Config.BlockSize)} ( {Bytes(Config.BlockSize)} )\n" +
                 $"Block Factor: \t\t{Config.BlockFactor}\n\n" +
-                $"Selection Size: \t\t{Hex(Program.selection_size)} ( {Bytes(Program.selection_size)} )\n" +
+                $"Selection Size: \t\t{Hex(Program.selection_size)} " +
+                    $"( {Bytes(Program.selection_size)} ){Shortfall()}\n" +
                 $"Sample Size: \t\t\t{Hex(Config.SampledBytes)} ( {Bytes(Config.SampledBytes)} )\n\n" +
                 $"Percent Sampled: \t\t{Config.CoveragePercent:0.##}%\n" +
                 $"Capture per Pass: \t\t{Bytes(Config.EstimatedCaptureBytesPerPass)}" +
                 warnings;
 
             RefreshSyncStatus();
+        }
+
+        /// <summary>
+        /// How much of the requested selection the extent does not actually cover, as a
+        /// trailing note, or empty when they agree.
+        ///
+        /// NumBlocks is floor(selection / BlockSize), so any selection that is not a
+        /// whole number of blocks loses the remainder. Usually that is zero, since both
+        /// lists are powers of two. The exception is "4 GB", which is stored one byte
+        /// short of 4 GiB to fit a uint and therefore always loses exactly one block —
+        /// 1 MB at the default block size, a full 1 GB at a 1 GB block size. Reporting
+        /// it here is what keeps that from being a silent surprise in the data.
+        /// </summary>
+        private static string Shortfall()
+        {
+            ulong requested = Program.selection_size;
+            ulong applied = Config.ExtentBytes;
+            if (applied >= requested) return "";
+            return $"  [short by {Bytes(requested - applied)}]";
         }
 
         // ============================== Data pattern ==============================
@@ -708,6 +762,24 @@ namespace DDR4_TestingApp
 
         /// <summary>Combo index for a byte count, or -1 when it isn't one of the presets.</summary>
         private static int IndexForSize(uint bytes) => Array.IndexOf(SizeTable, bytes);
+
+        /// <summary>
+        /// Select the item matching <paramref name="bytes"/>, or clear the selection if
+        /// this combo doesn't offer it.
+        ///
+        /// The guard matters because the two size combos share one table but not one
+        /// item list: blockSize stops at 1 GB. Assigning SelectedIndex = 7 to a combo
+        /// holding seven items throws ArgumentOutOfRangeException, so a config carrying
+        /// a 2 GB block size — which the wire format permits even though this form
+        /// doesn't offer it — would have crashed LoadFromConfig. -1 is legal and leaves
+        /// the box empty, which reads correctly as "not one of the presets".
+        /// </summary>
+        private static void SelectSize(ComboBox combo, uint bytes, int choices)
+        {
+            int index = IndexForSize(bytes);
+            combo.SelectedIndex = index >= 0 && index < choices && index < combo.Items.Count
+                ? index : -1;
+        }
 
         private static int IndexForFactor(uint factor)
         {

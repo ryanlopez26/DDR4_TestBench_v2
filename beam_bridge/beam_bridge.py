@@ -7,6 +7,20 @@ Every 100 ms this program:
   2. reports it to the ZCU and reads back what the ZCU wants (CMD_BEAMSERVICES),
   3. starts or stops an exposure over RS-232 when that request changes.
 
+HOW AN EXPOSURE IS DRIVEN
+-------------------------
+One exposure spans the whole run, not one per spill. The first time the ZCU
+raises its beam request the bridge calls start_exposure; every drop calls
+stop_exposure, which pauses; every later raise calls resume_exposure, which
+continues the same exposure toward the same quantity target. So a run that
+sees twenty spills makes one start, twenty stops and nineteen resumes, and the
+accumulated quantity carries across all of them.
+
+Calling start_exposure on each raise instead would reset the accumulation every
+spill and the requested fluence would never be reached. That is the reason the
+three command names in this file are fixed rather than looked up from a list of
+near-synonyms.
+
 It is the missing half of the ZCU's beam loop. beam.rs keeps BEAM_ON (beam on
 target) and BEAM_SERVICES (a 200 ms freshness stamp), and nothing inside the
 server writes either — the only writer is the CMD_BEAMSERVICES handler. Without
@@ -136,12 +150,28 @@ PREFLIGHT_FAILED = -32006
 # question that was never asked.
 TX_DISABLED = -32099
 
-# Command names to look for. The dosimetry system reports what it serves in
-# status['commands_allowed'], and the set differs between installations, so ask
-# rather than assume. First match wins.
-START_COMMANDS = ('start_exposure',)
-STOP_COMMANDS = ('stop_exposure', 'abort_exposure', 'end_exposure',
-                 'halt_exposure', 'cancel_exposure')
+# The three commands this program drives. Exact names, not candidate lists: the
+# distinction between them is the whole model, so substituting a near-neighbour
+# would change what the run measures rather than just how it is spelled.
+#
+#   start_exposure   opens an exposure and begins accumulating toward the
+#                    requested quantity
+#   stop_exposure    PAUSES it. The exposure stays open and the accumulated
+#                    quantity survives
+#   resume_exposure  continues that same exposure toward the same target
+#
+# That pause/resume pair is exactly the shape a spill-by-spill run needs, which
+# is why a beam request dropping must use stop_exposure and nothing else.
+# abort_exposure, end_exposure and cancel_exposure CLOSE the exposure out, so
+# the next beam request would begin a fresh one counting from zero and the
+# run's fluence target would never be reached — it would restart on every gap
+# between spills. They are deliberately not in this file.
+#
+# status['commands_allowed'] still decides what is actually reachable; these are
+# only the names looked for there.
+START_COMMAND = 'start_exposure'
+STOP_COMMAND = 'stop_exposure'
+RESUME_COMMAND = 'resume_exposure'
 
 
 class RpcError(Exception):
@@ -534,10 +564,12 @@ class Bridge:
 
     Two state variables matter and they are deliberately separate:
 
-      beam_on       what the dosimetry says is happening, mirrored from the
-                    subscription so the loop never pays for a serial round trip
-      commanded     what we last told the dosimetry to do, so exposure commands
-                    are edge-triggered
+      beam_on         what the dosimetry says is happening, mirrored from the
+                      subscription so the loop never pays for a serial round trip
+      commanded       what we last told the dosimetry to do, so exposure commands
+                      are edge-triggered
+      exposure_started whether the single run-long exposure has been opened yet,
+                      which decides start_exposure versus resume_exposure
 
     Edge-triggering is not an optimisation. start_exposure is refused when an
     exposure is already running (NOT_PERMITTED) and does not reply until the
@@ -547,7 +579,8 @@ class Bridge:
 
     def __init__(self, link: DosimetryLink, zcu: ZcuLink, *,
                  beam_signal: str, start_command: str | None,
-                 stop_command: str | None, dry_run: bool,
+                 stop_command: str | None, resume_command: str | None,
+                 dry_run: bool,
                  fallback_info: bool, min_dwell: float,
                  reconnect_interval: float, transmit: bool) -> None:
         self.link = link
@@ -555,6 +588,7 @@ class Bridge:
         self.beam_signal = beam_signal
         self.start_command = start_command
         self.stop_command = stop_command
+        self.resume_command = resume_command
         self.dry_run = dry_run
         self.transmit = transmit
         self.fallback_info = fallback_info
@@ -566,6 +600,17 @@ class Bridge:
         self.commanded: bool | None = None
         self.last_command_at = 0.0
         self.exposure_in_flight = False
+
+        # Set once start_exposure has been accepted. From then on a rising beam
+        # request resumes the open exposure rather than opening a new one, which
+        # is what keeps the accumulated quantity running across the gaps between
+        # spills instead of restarting on each.
+        self.exposure_started = False
+
+        # Set when resume_exposure is refused. Nothing automatic can fix that —
+        # see command_exposure — so it is surfaced in the status line and left
+        # for the operator.
+        self.exposure_stalled = False
 
         self.cycles = 0
         self.overruns = 0
@@ -605,7 +650,20 @@ class Bridge:
         if now - self.last_command_at < self.min_dwell:
             return
 
-        method = self.start_command if want else self.stop_command
+        # Rising edge: open the exposure the first time, continue it afterwards.
+        # Falling edge: always stop_exposure, which pauses rather than closes —
+        # see the command table at the top for why nothing else will do.
+        if not want:
+            method = self.stop_command
+        elif self.exposure_started:
+            # Falling back to start when resume is not served matches what main()
+            # warns about at startup: it opens a NEW exposure with the
+            # accumulated quantity reset, so the fluence target restarts on every
+            # gap between spills. Wrong for a real run, but better than silently
+            # refusing to re-enable beam at all, and the warning says so.
+            method = self.resume_command or self.start_command
+        else:
+            method = self.start_command
 
         # The gate is checked before the missing-command case, because muted mode
         # never discovers any command names — there is nothing to look up, and
@@ -614,9 +672,12 @@ class Bridge:
         # every dwell period. begin() is the real backstop; this only keeps the
         # output readable.
         if self.dry_run or not self.transmit:
+            fallback = ('resume' if self.exposure_started else 'start') if want else 'stop'
             print(f'  [{"dry-run" if self.dry_run else "tx-muted"}] would '
-                  f'{method or ("start" if want else "stop")} exposure')
+                  f'{method or fallback} exposure')
             self.commanded = want
+            if want:
+                self.exposure_started = True
             self.last_command_at = now
             return
 
@@ -636,6 +697,13 @@ class Bridge:
             if error is None:
                 state = (result or {}).get('state', '?')
                 print(f'  [serial] {method} done, state is {state}')
+                # Only now is the exposure definitely open, so only now does the
+                # next rising edge become a resume. Latching it optimistically at
+                # send time would turn a refused start into a resume against an
+                # exposure that was never opened.
+                if want:
+                    self.exposure_started = True
+                    self.exposure_stalled = False
                 return
             # A refusal leaves `commanded` set to what we asked for, which is
             # wrong, so roll it back and let the next cycle retry after the
@@ -648,6 +716,41 @@ class Bridge:
                 for failure in report.get('failures', []):
                     print(f"    {failure.get('id', '?')}: "
                           f"{failure.get('message', '')}")
+            elif error.code == NOT_PERMITTED and method == self.start_command:
+                # An exposure is already open: one an operator started by hand,
+                # or one a previous run of this program left paused. Not a
+                # failure — it only means the right command was resume.
+                #
+                # Treating this as goal-met, the way the generic branch below
+                # does, would be wrong and quiet about it: nothing resumed, so
+                # the request is high while the exposure stays paused and the
+                # bridge believes beam is on. Record that the exposure exists
+                # and clear `commanded` so the next cycle re-decides this same
+                # edge, which will now pick resume.
+                self.exposure_started = True
+                self.commanded = None
+                print(f'  [serial] {method} not permitted, an exposure is '
+                      f'already open — will send '
+                      f'{self.resume_command or "no resume command"} instead')
+            elif error.code == NOT_PERMITTED and method == self.resume_command:
+                # A resume the dosimetry will not accept is the one refusal that
+                # is NOT benign. The usual cause is that the exposure is no
+                # longer open — the quantity cutoff was reached and it closed
+                # itself — so the run is finished whether or not the ZCU knows.
+                #
+                # Nothing automatic is right here. Falling back to
+                # start_exposure would open a FRESH exposure with the
+                # accumulation reset to zero, silently turning one run into two.
+                # Retrying forever would just fill the log. So: say it once,
+                # hold `commanded` so the edge is not re-decided, raise the
+                # stalled flag for the status line, and leave it to the operator.
+                self.commanded = want
+                self.exposure_stalled = True
+                print(f'  [serial] *** {method} REFUSED: {error.data}')
+                print('  [serial] *** the exposure is probably closed (quantity '
+                      'cutoff reached).')
+                print('  [serial] *** beam will NOT resume until an operator '
+                      'starts a new exposure.')
             elif error.code == NOT_PERMITTED:
                 # Wrong state for the command, which for this program's purposes
                 # means the goal was already met: a stop refused because nothing
@@ -674,6 +777,12 @@ class Bridge:
         Bypasses the dwell and the edge check on purpose: this runs when the
         loop is giving up, and "we already commanded stop" is not a reason to
         skip a final stop when the previous one may itself have been lost.
+
+        Note this PAUSES rather than closes: the exposure is left open on the
+        dosimetry with its accumulated quantity intact. That is the right
+        fail-safe — beam off, nothing discarded — but it does mean an operator
+        has to close the exposure out, or restart this program, before the
+        quantity stops being carried forward.
         """
         if self.stop_command is None or self.dry_run or not self.transmit:
             if not self.transmit:
@@ -781,10 +890,17 @@ class Bridge:
         link = 'up' if self.zcu.connected else 'DOWN'
         pending = ','.join(self.link.pending_methods) or '-'
         tx = 'on' if self.link.transmit else f'MUTED({self.link.suppressed})'
+        if self.exposure_stalled:
+            exposure = 'STALLED'
+        elif self.exposure_started:
+            exposure = 'open'
+        else:
+            exposure = 'unopened'
         # worst_period is the number that matters: beam.rs drops BEAM_SERVICES
         # once its stamp is 200 ms old, so anything approaching that means the
         # ZCU has been reading the facility as offline between cycles.
-        print(f'  beam={beam:<7} commanded={want:<6} zcu={link:<4} tx={tx:<10} '
+        print(f'  beam={beam:<7} commanded={want:<6} exposure={exposure:<8} '
+              f'zcu={link:<4} tx={tx:<10} '
               f'cycles={self.cycles} worst={self.worst_period * 1000:.0f}ms '
               f'overruns={self.overruns} faults={self.zcu_faults} '
               f'pending={pending}')
@@ -810,11 +926,9 @@ def describe(link: DosimetryLink) -> dict:
     return status
 
 
-def pick_command(allowed: list[str], candidates: tuple[str, ...]) -> str | None:
-    for name in candidates:
-        if name in allowed:
-            return name
-    return None
+def pick_command(allowed: list[str], name: str) -> str | None:
+    """The command if this installation serves it, otherwise None."""
+    return name if name in allowed else None
 
 
 def subscribe_beam(link: DosimetryLink, signal: str) -> int:
@@ -954,8 +1068,9 @@ def main(argv: list[str] | None = None) -> int:
         if transmit:
             status = describe(link)
             allowed = status.get('commands_allowed', [])
-            start_command = pick_command(allowed, START_COMMANDS)
-            stop_command = pick_command(allowed, STOP_COMMANDS)
+            start_command = pick_command(allowed, START_COMMAND)
+            stop_command = pick_command(allowed, STOP_COMMAND)
+            resume_command = pick_command(allowed, RESUME_COMMAND)
         else:
             # Every startup call needs the cable, so there is nothing to ask and
             # nothing to discover. Say exactly what is and is not running, because
@@ -967,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
                   'FACILITY SERVICES')
             print('  will read ONLINE even though nothing is measuring beam')
             allowed = []
-            start_command = stop_command = None
+            start_command = stop_command = resume_command = None
 
         if not arguments.dry_run and transmit:
             if start_command is None:
@@ -976,14 +1091,29 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 return 2
             if stop_command is None and not arguments.allow_no_stop:
-                print('the dosimetry system serves no exposure STOP command.\n'
+                print(f'the dosimetry system does not serve {STOP_COMMAND}.\n'
                       'Refusing to run: starting an exposure that this program '
                       'cannot stop puts the whole cutoff on the dosimetry '
                       'system alone. Pass --allow-no-stop if that is genuinely '
                       'the intended arrangement.', file=sys.stderr)
                 return 2
+            if resume_command is None:
+                # Not fatal, but it changes what the run measures, so it does not
+                # get to be a footnote. Without resume the only way to re-enable
+                # beam after a stop is to open a new exposure, which resets the
+                # accumulated quantity — so the requested fluence restarts on
+                # every gap between spills and is never reached.
+                print(f'\nWARNING: {RESUME_COMMAND} is not served by this '
+                      f'dosimetry system.\n'
+                      f'  Every beam request after the first will call '
+                      f'{START_COMMAND} instead, which opens a NEW exposure\n'
+                      f'  with the accumulated quantity reset to zero. A run '
+                      f'spanning several spills will not reach\n'
+                      f'  its fluence target. Check the command list before '
+                      f'relying on the numbers.\n', file=sys.stderr)
 
-        print(f'  start={start_command or "-"}  stop={stop_command or "-"}')
+        print(f'  start={start_command or "-"}  stop={stop_command or "-"}  '
+              f'resume={resume_command or "-"}')
         check_zcu(zcu, arguments.fallback_info)
 
         if transmit:
@@ -999,6 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
                         beam_signal=arguments.beam_signal,
                         start_command=start_command,
                         stop_command=stop_command,
+                        resume_command=resume_command,
                         dry_run=arguments.dry_run,
                         fallback_info=arguments.fallback_info,
                         min_dwell=arguments.min_dwell,

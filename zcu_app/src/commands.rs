@@ -302,10 +302,7 @@ pub fn enginestatus_command(stream: &mut TcpStream) {
 
     // Response struct
     let rsp = EngineStatusRsp {
-        current_request_type: match &eng_status.active_record {
-            Some(r) => Some(r.rtype),
-            None => None,
-        },
+        current_request_type: eng_status.active_rtype,
         record_progress: eng_status.task_progress,
         is_idle: eng_status.is_idle,
         queue: eng_cmd.task_queue.clone(),

@@ -36,6 +36,44 @@ const CAPTURE_BUF_BYTES: usize = 1 << 20;
 /// Leave false until the C# RecordViewer parses the sparse layout.
 const SPARSE_CAPTURE: bool = false;
 
+/// true  = Dynamic writes each chunk, then reads it straight back (the default).
+/// false = Dynamic only READS, comparing what is in memory against the expected
+///         pattern without refreshing it.
+///
+/// Affects the Dynamic arm ONLY. Write, Verify and Read are untouched, so with
+/// this false a Write task still writes.
+///
+/// THIS CHANGES WHAT THE RUN MEASURES, not just how fast it goes.
+///
+/// With writes ON, every chunk is rewritten microseconds before it is read, so
+/// the retention window is one chunk's write-to-read gap. A flipped bit is
+/// scrubbed on the next pass and counted once. incorrect_bits is therefore an
+/// error count, and the ratio that drives SEFI detection tracks damage
+/// happening *now*.
+///
+/// With writes OFF, nothing is refreshed, so upsets ACCUMULATE for the whole
+/// run. A cell that flips on pass 1 is still wrong on pass 20 and is counted
+/// again on every one of them. Consequences worth having in mind before
+/// reading the numbers:
+///
+///   * incorrect_bits, err_bins and adj_err_bins become a cumulative re-count,
+///     not a per-pass error count. They scale with how many passes the run got
+///     through, which depends on beam time.
+///   * log_error_rate ratchets upward and plateaus instead of tracking the
+///     instantaneous rate.
+///   * config.sefi_threshold latches permanently once crossed, because the
+///     ratio can no longer come back down. time_to_sefi still reports the
+///     onset, but the beam request is dropped on first crossing and will not
+///     be re-raised.
+///   * The memory must have been written BEFOREHAND, by a Write task on the
+///     same pattern and seed. Nothing here can check that — running this
+///     against memory that was never written reports every bit as incorrect.
+///
+/// That is the right mode for measuring total accumulated upsets over a
+/// fluence, and the wrong one for a cross-section fit that assumes each error
+/// is seen once.
+const DYNAMIC_WRITES: bool = false;
+
 // PARAMS
 const UPDATE_FREQUENCY: Duration = Duration::from_millis(200);
 const SIGNAL_HOLD_REQUIREMENT: Duration = Duration::from_millis(200);
@@ -228,7 +266,7 @@ pub struct EngineCommand {
 pub struct EngineStatus {
 
     // Record of the request currently underway
-    pub active_record: Option<record::Record>,
+    pub active_rtype: Option<record::RecordType>,
 
     // Status of the engine
     pub is_idle: bool,
@@ -242,7 +280,7 @@ pub static CMD: RwLock<EngineCommand> = RwLock::new(EngineCommand { task_queue: 
 
 pub static STATUS: RwLock<EngineStatus> = RwLock::new(
     EngineStatus{
-        active_record: None,
+        active_rtype: None,
         is_idle: true,
         task_runtime: 0.0,
         task_progress: 100.0,
@@ -254,6 +292,11 @@ fn abort_check() -> bool {
 
     //Obtain lock on command variable
     let cmd = CMD.read().unwrap();
+
+    //Send beam low (if aborted)
+    if(cmd.abort_task){
+        beam::set_beam_request(false);
+    }
 
     // Return status
     cmd.abort_task
@@ -272,11 +315,11 @@ fn abort_check() -> bool {
 /// while every status reader was blocked behind it. A ten-minute run at 200 ms
 /// checkpoints is 3000 iterations, each copying up to 3000 elements per vector.
 fn publish(r: &Record, progress: f64) {
-    let snapshot = r.clone();
+    let rtype = r.rtype;
     let runtime = (get_epoch() - r.time_started) as f64;
 
     let mut s = STATUS.write().unwrap();
-    s.active_record = Some(snapshot);
+    s.active_rtype = Some(rtype);
     s.task_progress = progress;
     s.task_runtime = runtime;
 }
@@ -365,7 +408,7 @@ pub fn engine_main(){
         {
             let mut sts = STATUS.write().unwrap();
 
-            sts.active_record = None;
+            sts.active_rtype = None;
             sts.is_idle = true;
             sts.task_progress = 0.0;
             sts.task_runtime = 0.0;
@@ -869,6 +912,19 @@ pub fn engine_main(){
                         }
 
                         // ---- Phase 2: the test proper.
+                        //
+                        // Said once per record, not per chunk: a Dynamic record
+                        // taken with writes off is not comparable with one taken
+                        // with them on, and the only other trace of the setting
+                        // is this line in the log.
+                        if !DYNAMIC_WRITES {
+                            eprintln!(
+                                "[!] {:04X}: DYNAMIC_WRITES is false — read-only pass, \
+                                 upsets accumulate and are re-counted every pass",
+                                r.rid
+                            );
+                        }
+
                         let beam_start_instant = Instant::now();
                         let mut b_last_high = Instant::now();
                         let mut last_below_threshold = Instant::now();
@@ -904,7 +960,19 @@ pub fn engine_main(){
                                     // the retention-window note below — this is
                                     // the one place chunking changes the physics
                                     // of the measurement, not just its speed.
-                                    let put = write_chunk(&config, at, &expected[..n]);
+                                    //
+                                    // With DYNAMIC_WRITES off, the write is
+                                    // skipped and `put` stands in for it so the
+                                    // read below still covers the whole chunk
+                                    // and still compares against `expected`.
+                                    // Returning 0 instead would shorten the read
+                                    // slice to nothing and silently compare no
+                                    // bytes at all.
+                                    let put = if DYNAMIC_WRITES {
+                                        write_chunk(&config, at, &expected[..n])
+                                    } else {
+                                        n
+                                    };
                                     let got = read_chunk(&config, at, &mut actual[..put.min(n)]);
 
                                     if got < put {

@@ -207,7 +207,7 @@
             CM_ip.Name = "CM_ip";
             CM_ip.Size = new Size(97, 23);
             CM_ip.TabIndex = 1;
-            CM_ip.Text = "127.0.0.1";
+            CM_ip.Text = "172.16.0.2";
             // 
             // CM_connect
             // 
@@ -903,7 +903,6 @@
             // 
             // pmicVolts
             // 
-            pmicVolts.AutoSize = false;
             pmicVolts.BackColor = Color.Black;
             pmicVolts.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
             pmicVolts.ForeColor = Color.Yellow;
@@ -916,7 +915,6 @@
             // 
             // pmicAmps
             // 
-            pmicAmps.AutoSize = false;
             pmicAmps.BackColor = Color.Black;
             pmicAmps.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
             pmicAmps.ForeColor = Color.Yellow;
@@ -929,7 +927,6 @@
             // 
             // pmicWatts
             // 
-            pmicWatts.AutoSize = false;
             pmicWatts.BackColor = Color.Black;
             pmicWatts.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
             pmicWatts.ForeColor = Color.Yellow;

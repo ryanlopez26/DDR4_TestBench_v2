@@ -159,7 +159,7 @@
             // selectionSize
             // 
             selectionSize.FormattingEnabled = true;
-            selectionSize.Items.AddRange(new object[] { "4 KB", "64 KB", "1 MB", "16 MB", "256 MB", "512 MB", "1 GB" });
+            selectionSize.Items.AddRange(new object[] { "4 KB", "64 KB", "1 MB", "16 MB", "256 MB", "512 MB", "1 GB", "2 GB", "3 GB", "4 GB" });
             selectionSize.Location = new Point(115, 20);
             selectionSize.Name = "selectionSize";
             selectionSize.Size = new Size(76, 23);
