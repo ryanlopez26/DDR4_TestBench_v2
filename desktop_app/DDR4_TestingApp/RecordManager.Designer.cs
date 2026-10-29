@@ -37,6 +37,7 @@
             requestWrite = new Button();
             requestRead = new Button();
             requestDynamic = new Button();
+            requestExpose = new Button();
             ((System.ComponentModel.ISupportInitialize)splitContainer1).BeginInit();
             splitContainer1.Panel1.SuspendLayout();
             splitContainer1.Panel2.SuspendLayout();
@@ -96,6 +97,7 @@
             // 
             // groupBox1
             // 
+            groupBox1.Controls.Add(requestExpose);
             groupBox1.Controls.Add(requestVerify);
             groupBox1.Controls.Add(requestWrite);
             groupBox1.Controls.Add(requestRead);
@@ -109,39 +111,49 @@
             // 
             // requestVerify
             // 
-            requestVerify.Location = new Point(326, 22);
+            requestVerify.Location = new Point(270, 22);
             requestVerify.Name = "requestVerify";
-            requestVerify.Size = new Size(97, 43);
+            requestVerify.Size = new Size(68, 43);
             requestVerify.TabIndex = 3;
             requestVerify.Text = "Verify";
             requestVerify.UseVisualStyleBackColor = true;
+            requestVerify.Click += requestVerify_Click;
             // 
             // requestWrite
             // 
-            requestWrite.Location = new Point(223, 22);
+            requestWrite.Location = new Point(196, 22);
             requestWrite.Name = "requestWrite";
-            requestWrite.Size = new Size(97, 43);
+            requestWrite.Size = new Size(68, 43);
             requestWrite.TabIndex = 2;
             requestWrite.Text = "Write";
             requestWrite.UseVisualStyleBackColor = true;
             // 
             // requestRead
             // 
-            requestRead.Location = new Point(120, 22);
+            requestRead.Location = new Point(122, 22);
             requestRead.Name = "requestRead";
-            requestRead.Size = new Size(97, 43);
+            requestRead.Size = new Size(68, 43);
             requestRead.TabIndex = 1;
             requestRead.Text = "Read";
             requestRead.UseVisualStyleBackColor = true;
             // 
             // requestDynamic
             // 
-            requestDynamic.Location = new Point(17, 22);
+            requestDynamic.Location = new Point(48, 22);
             requestDynamic.Name = "requestDynamic";
-            requestDynamic.Size = new Size(97, 43);
+            requestDynamic.Size = new Size(68, 43);
             requestDynamic.TabIndex = 0;
             requestDynamic.Text = "Dynamic";
             requestDynamic.UseVisualStyleBackColor = true;
+            // 
+            // requestExpose
+            // 
+            requestExpose.Location = new Point(344, 22);
+            requestExpose.Name = "requestExpose";
+            requestExpose.Size = new Size(68, 43);
+            requestExpose.TabIndex = 4;
+            requestExpose.Text = "Expose";
+            requestExpose.UseVisualStyleBackColor = true;
             // 
             // RecordManager
             // 
@@ -173,5 +185,6 @@
         private Button requestWrite;
         private Button requestRead;
         private Button requestDynamic;
+        private Button requestExpose;
     }
 }

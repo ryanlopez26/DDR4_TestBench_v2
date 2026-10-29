@@ -3,9 +3,68 @@
 //
 // ============================== WHAT CHANGED THIS ROUND ==============================
 //
-// Four server-side fixes landed and one command was added. None of them is a
-// flag day: an old client keeps working, it just cannot reach Expose and
-// carries stale documentation.
+// THIS ONE IS A FLAG DAY. Two reply shapes changed, so an old client does not
+// fail cleanly — it misdecodes.
+//
+//  1. InfoRsp WAS RESTRUCTURED. It is no longer twelve bools. The beam fields
+//     were replaced, clamp_request is gone, and a PMIC reading was inserted in
+//     the middle:
+//
+//        beam_possible   -> GONE, replaced by beam_request + beam_services
+//        beam_present    -> renamed beam_active, now the FIRST field
+//        clamp_request   -> GONE (nothing reports the EMIO line any more)
+//        pmic            -> NEW, Option<PowerStats>, 4th field, 1 or 26 bytes
+//
+//     Anything reading InfoRsp.BeamPossible or InfoRsp.ClampRequest has to be
+//     reworked — those have no wire source now. Launcher.cs uses both.
+//
+//  2. Record's beam series COLLAPSED FROM THREE TO TWO and gained a PMIC
+//     series. log_beam_present / log_beam_possible / log_beam_request became
+//     log_beam_active / log_beam_request, with log_pmic inserted after
+//     log_sefi_detected. RecordViewer.cs plots the old three.
+//
+//  3. NEW TYPE PowerStats { f64 volts, f64 amps, f64 watts, bool power_derived },
+//     25 bytes. It arrives both as InfoRsp.pmic and per-sample in
+//     Record.log_pmic. Read power.rs before trusting the numbers: this is a
+//     VCC1V2 RAIL measurement that also carries PL bank I/O and the PS-side
+//     DDR4 interface, not per-device SODIMM current.
+//
+//  4. CMD_BEAMSERVICES 0x1A exists in config.rs with BeamServicesCmd and
+//     BeamServicesRsp in types.rs, but SERVER.RS HAS NO DISPATCH ARM FOR IT.
+//     See SetBeamServicesAsync, and read the beam-path warning below — this
+//     missing arm is currently load-bearing.
+//
+//  5. Expose progress is fixed and is now a PERCENTAGE like every other arm,
+//     correctly scaled against the millisecond limit and capped at 100. The
+//     only oddity left is a constant 50.0 when no limit is configured.
+//
+//  6. FPGA images are now plain `.bit`, not `.bit.bin`.
+//
+// ============================== THE BEAM PATH IS DEAD ========================
+//
+// Worth knowing before you read anything beam-related below. beam.rs declares
+// BEAM_ON and BEAM_SERVICES but NOTHING IN THE TREE EVER WRITES THEM — the
+// only writer would be the CMD_BEAMSERVICES arm that server.rs does not have.
+// Everything downstream follows:
+//
+//   * InfoRsp.BeamActive and InfoRsp.BeamServices are always false.
+//   * Record.LogBeamActive is all false on every record.
+//   * THE EXPOSE TASK ENDS IMMEDIATELY. Its arm refreshes active_last_high only
+//     while is_beam_active() is true, so that timer runs past the 200 ms hold
+//     requirement on the first pass, the delayed exit arms, and the record
+//     completes roughly 400 ms in with zero exposure. It does not hang — it
+//     finishes, with nothing in it.
+//   * The Dynamic arm's beam gating never sees beam.
+//
+// set_beam_request() also no longer touches GPIO, so CMD_CLAMPCMD moves a
+// software flag and nothing else; gpio::set_clamp_request has no callers left
+// anywhere in the tree. The EMIO beam lines (get_beam_present /
+// get_beam_possible) are likewise uncalled — beam state is now meant to arrive
+// over the wire from whatever supervises the facility signal.
+//
+// ============================= PRECEDING ROUND (mostly current) ==============
+//
+// One command was added and four fixes landed.
 //
 //  * NEW COMMAND 0x19 CMD_EXPOSE { u16 rid }, send-only. RecordType::Expose is
 //    finally reachable — see QueueExposeAsync, and read its remarks before
@@ -42,7 +101,7 @@
 //        log_beam_possible  — facility says beam is available (EMIO 79)
 //        log_beam_request   — what the server is asking for (clamp output)
 //     In that order, between log_current_address and log_sefi_detected.
-//     Record.LogBeamSignal survives as a read-only alias for LogBeamPresent so
+//     Record.LogBeamSignal survives as a read-only alias so
 //     existing display code still compiles.
 //
 //  3. RecordType gained Expose = 4. Any `switch` on RecordType without a
@@ -125,6 +184,11 @@
 //  0x17  REQUESTPOWERSTATE u8 state (0/1/2)            -> bool success
 //  0x18  CLAMPCMD          bool state                  -> (nothing)
 //  0x19  EXPOSE            u16 rid                     -> (nothing)
+//  0x1A  BEAMSERVICES      bool beam_on                -> bool beam_request *
+//
+//  * 0x1A is declared in config.rs and types.rs but has NO dispatch arm in
+//    server.rs, so the server logs "unknown CMD" and never replies. See
+//    SetBeamServicesAsync.
 //
 // CMD_GETCAPTURE is the one command whose reply is NOT bincode. The server
 // streams the capture file straight from disk to the socket, so the payload is
@@ -198,6 +262,47 @@ namespace DDR4_TestingApp
     }
 
     // ============================== Wire types ==============================
+
+    /// <summary>
+    /// power.rs PowerStats — 25 bytes on the wire (3 x f64 + 1 bool).
+    ///
+    /// READ WHAT THIS ACTUALLY MEASURES BEFORE USING IT. The ZCU104 has no
+    /// current sense dedicated to the SODIMM socket. These numbers come from the
+    /// IRPS5401 PMIC's VCC1V2 rail (PHASE_C, PMBus page 2) via Linux hwmon, and
+    /// that rail feeds the SODIMM *plus* PL banks 64/65/66 driving it *plus* PS
+    /// bank 504 — the PS-side DDR4 interface. So it is board-level rail health,
+    /// good for catching a collapsing rail or a gross overdraw, and NOT the
+    /// per-device current you want for latchup or SEFI detection. That comes
+    /// from the INA293 shunt path on the custom SODIMM cards.
+    ///
+    /// The server returns a canned plausible reading (1.203 V, 0.234 A) when
+    /// SIMULATION_MODE is set, so a simulated run shows something in range
+    /// rather than zeroes that read as a dead rail.
+    /// </summary>
+    public struct PowerStats
+    {
+        /// <summary>Rail voltage, volts.</summary>
+        public double Volts;
+
+        /// <summary>Rail current, amps. Reads 0 if the PMIC exposes no iout page.</summary>
+        public double Amps;
+
+        /// <summary>Rail power, watts.</summary>
+        public double Watts;
+
+        /// <summary>
+        /// True when <see cref="Watts"/> was computed as Volts * Amps rather than
+        /// read from the PMIC's own pout register. The register is the better
+        /// number — the product multiplies two readings that were not sampled at
+        /// the same instant.
+        /// </summary>
+        public bool PowerDerived;
+
+        public const int WireSize = 25;
+
+        public override string ToString() =>
+            $"{Volts:0.000} V, {Amps:0.000} A, {Watts:0.000} W{(PowerDerived ? " (derived)" : "")}";
+    }
 
     /// <summary>
     /// types.rs ConfigCmd — 43 bytes on the wire (was 34; the two exposure fields are
@@ -342,10 +447,11 @@ namespace DDR4_TestingApp
         // so within one record they legitimately have different lengths. Zip them
         // defensively — never index one by another's Length.
         //
-        // The Expose arm used to push log_beam_possible twice per tick, which left
-        // that one series at roughly double the length of the others and misaligned
-        // against log_timestamp. Fixed server-side, but records captured before the
-        // fix still carry it, so the defensive zipping above is still worth doing.
+        // Older records on the card carry a different shape. Before this round there
+        // were THREE beam series (present / possible / request) and no PMIC series;
+        // before that, one. A record reloaded from /dvr/records that predates a change
+        // will not deserialize against the current struct at all, and archive::init
+        // silently skips any record whose JSON no longer matches.
 
         public double[] LogTimestamp = Array.Empty<double>();
         public ulong[] LogBitsProcessed = Array.Empty<ulong>();
@@ -354,29 +460,40 @@ namespace DDR4_TestingApp
         public double[] LogErrorRate = Array.Empty<double>();   // never written by the server yet
         public uint[] LogCurrentAddress = Array.Empty<uint>();
 
-        /// <summary>Beam on target (EMIO 78). Formerly the only beam series.</summary>
-        public bool[] LogBeamPresent = Array.Empty<bool>();
-
-        /// <summary>Facility reports beam is available (EMIO 79).</summary>
-        public bool[] LogBeamPossible = Array.Empty<bool>();
+        /// <summary>
+        /// Beam on target at each sample. ALL FALSE as the server stands — this reads
+        /// beam.rs's BEAM_ON, which has no writer anywhere. See the header.
+        /// </summary>
+        public bool[] LogBeamActive = Array.Empty<bool>();
 
         /// <summary>
-        /// What the server was ASKING for at each sample — the REQUEST_BEAM global that
-        /// also drives the clamp output. Reading this against LogBeamPresent is how you
-        /// tell "we asked and got it" from "we asked and waited". CMD_CLAMPCMD now
-        /// writes the same global, so a manual clamp shows up in this series too.
+        /// What the server was ASKING for at each sample — the REQUEST_BEAM global.
+        /// Reading this against <see cref="LogBeamActive"/> is how you tell "we asked
+        /// and got it" from "we asked and waited", and also how the dead beam path
+        /// shows up in a record: request goes high, active never does.
         /// </summary>
         public bool[] LogBeamRequest = Array.Empty<bool>();
 
         public bool[] LogSefiDetected = Array.Empty<bool>();
+
+        /// <summary>
+        /// Per-sample VCC1V2 rail telemetry, one entry per progress tick. An entry is
+        /// null when that sample's read failed or the PMIC is not exposed through
+        /// hwmon; every arm pushes this series unconditionally, so nulls are gaps
+        /// rather than a shorter array. See <see cref="PowerStats"/> for what the
+        /// numbers actually cover.
+        /// </summary>
+        public PowerStats?[] LogPmic = Array.Empty<PowerStats?>();
+
         public ulong[][] LogAdjErrBins = Array.Empty<ulong[]>();
         public ulong[][] LogErrBins = Array.Empty<ulong[]>();
 
         /// <summary>
-        /// Compatibility alias for the pre-split <c>log_beam_signal</c>. The old single
-        /// series was beam-on-target, which is LogBeamPresent.
+        /// Compatibility alias for the single beam series this carried before it was
+        /// split into three and then collapsed back into two. That series is now
+        /// beam-active.
         /// </summary>
-        public bool[] LogBeamSignal => LogBeamPresent;
+        public bool[] LogBeamSignal => LogBeamActive;
 
         /// <summary>
         /// Shortest of the series this record actually populated, i.e. how many rows can
@@ -394,9 +511,10 @@ namespace DDR4_TestingApp
                     LogBitsIncorrect.Length,
                     LogBitsCorrect.Length,
                     LogCurrentAddress.Length,
-                    LogBeamPresent.Length,
+                    LogBeamActive.Length,
                     LogBeamRequest.Length,
                     LogSefiDetected.Length,
+                    LogPmic.Length,
                 };
 
                 int min = int.MaxValue;
@@ -408,7 +526,21 @@ namespace DDR4_TestingApp
         }
     }
 
-    /// <summary>run.rs Run. Sent by SAVERUN, returned by GETRUN. Unchanged this round.</summary>
+    /// <summary>
+    /// types.rs BeamServicesCmd / BeamServicesRsp. Declared on both sides but
+    /// UNREACHABLE — server.rs has no dispatch arm for CMD_BEAMSERVICES. Recorded here
+    /// so the shape is on hand for whoever adds that arm.
+    /// </summary>
+    public struct BeamServices
+    {
+        /// <summary>Outbound: beam is on target right now (BeamServicesCmd.beam_on).</summary>
+        public bool BeamOn;
+
+        /// <summary>Inbound: what the server wants (BeamServicesRsp.beam_request).</summary>
+        public bool BeamRequest;
+    }
+
+    /// <summary>run.rs Run. Sent by SAVERUN, returned by GETRUN.</summary>
     public sealed class Run
     {
         public ulong TimeStarted;
@@ -464,18 +596,15 @@ namespace DDR4_TestingApp
         /// Progress, 0..100 for Read / Verify / Write / Dynamic (block index over
         /// num_blocks, so it sawtooths on Dynamic — one ramp per sweep).
         ///
-        /// MEANINGLESS ON AN EXPOSE RECORD. That arm reports
-        /// <c>exposure_time / exposure_time_limit_ms</c> — seconds divided by
-        /// milliseconds, so it comes out 1000x smaller than the fraction it is meant to
-        /// be — and a flat 0.5 when no limit is configured. The two cases are not
-        /// distinguishable from the wire, so <see cref="NormalizedProgress"/> reports
-        /// Expose as unknown rather than guessing. Use the raw value only if you know
-        /// which case you are in.
+        /// Expose now reports a percentage too — accumulated beam time against
+        /// exposure_time_limit_ms, correctly scaled and capped at 100. It used to
+        /// divide seconds by milliseconds without scaling, so it read 1000x low and as
+        /// a fraction; that is fixed, and every arm is on the same scale.
         ///
-        /// The server-side fix is one line: make that arm emit
-        /// <c>exposure_time * 1000.0 / exposure_time_limit_ms * 100.0</c>, matching the
-        /// percentage every other arm reports. Once it does, drop the Expose arm from
-        /// NormalizedProgress and this all becomes uniform.
+        /// One placeholder remains: an Expose task with NO exposure limit configured
+        /// reports a CONSTANT 50.0, because there is no denominator to measure against.
+        /// That is not a half-finished task. <see cref="IsProgressKnown"/> recognises
+        /// the case when this client is the one that applied the config.
         /// </summary>
         public double RecordProgress;
 
@@ -485,20 +614,14 @@ namespace DDR4_TestingApp
         public TaskRequest[] Queue = Array.Empty<TaskRequest>();
 
         /// <summary>
-        /// Progress normalized to 0..1, or null when the engine is idle OR when the
-        /// running task reports progress that cannot be interpreted.
-        ///
-        /// Expose falls in the second case — see <see cref="RecordProgress"/> for why.
-        /// A caller should treat null-while-busy as "indeterminate" (a marquee bar, or
-        /// elapsed time from the record) rather than as zero; use
-        /// <see cref="IsProgressKnown"/> to tell the two nulls apart.
+        /// Progress normalized to 0..1, or null when the engine is idle. Uniform across
+        /// record types now that Expose reports a percentage like the rest.
         /// </summary>
         public double? NormalizedProgress
         {
             get
             {
-                if (CurrentRequestType is not RecordType type) return null;
-                if (type == RecordType.Expose) return null;
+                if (!CurrentRequestType.HasValue) return null;
 
                 double raw = RecordProgress / 100.0;
                 if (double.IsNaN(raw)) return 0.0;
@@ -507,11 +630,27 @@ namespace DDR4_TestingApp
         }
 
         /// <summary>
-        /// True when a task is running AND its progress number means something. False
-        /// while idle, and false during an Expose task, whose progress is unusable.
+        /// True when a task is running AND its progress number tracks real work.
+        ///
+        /// False while idle. Also false during an Expose task with no exposure limit,
+        /// where the server emits a constant 50.0 — a bar sitting at exactly half for
+        /// twenty minutes reads as a hung task rather than as the placeholder it is, so
+        /// an indeterminate bar is the honest rendering.
+        ///
+        /// Whether the limit is set is read from <see cref="TcpManager.CommittedConfig"/>,
+        /// which is only populated once this client has applied a config. On a fresh
+        /// connect to an already-configured server this errs toward "known" rather than
+        /// hiding a number that may well be real.
         /// </summary>
-        public bool IsProgressKnown =>
-            CurrentRequestType.HasValue && CurrentRequestType != RecordType.Expose;
+        public bool IsProgressKnown
+        {
+            get
+            {
+                if (!CurrentRequestType.HasValue) return false;
+                if (CurrentRequestType != RecordType.Expose) return true;
+                return TcpManager.CommittedConfig?.ExposureTimeLimitEnabled ?? true;
+            }
+        }
 
         /// <summary>
         /// True when the engine claims to be idle but still has work queued. The
@@ -523,37 +662,56 @@ namespace DDR4_TestingApp
     }
 
     /// <summary>
-    /// types.rs InfoRsp — the read-only EMIO lines from gpio.rs, plus one heartbeat.
+    /// types.rs InfoRsp — RESTRUCTURED this round, see the header.
     ///
     /// FIELD ORDER IS THE WIRE ORDER. bincode serializes in struct DECLARATION
-    /// order, so this must mirror types.rs exactly. Note that commands.rs builds the
-    /// struct with its members written in a different order than they are declared —
-    /// harmless, since serde ignores initializer order, but don't use the command
-    /// handler as the reference when checking this.
+    /// order, and commands.rs builds the struct with its members written in a
+    /// different order than types.rs declares them — harmless, since serde
+    /// ignores initializer order, but don't use the command handler as the
+    /// reference when checking this against the Rust.
+    ///
+    /// Size is 13 bytes with no PMIC reading, 38 with one.
     /// </summary>
     public struct InfoRsp
     {
-        /// <summary>Beam is available at the facility (EMIO 79).</summary>
-        public bool BeamPossible;
-
-        /// <summary>Beam is on target right now (EMIO 78).</summary>
+        /// <summary>
+        /// Beam is on target. ALWAYS FALSE as the server stands: beam.rs's
+        /// BEAM_ON has no writer anywhere in the tree. See the header.
+        /// </summary>
         public bool BeamActive;
 
         /// <summary>
-        /// The server has heard a GETPOWERMODE request within the last 250 ms. This is a
-        /// HEARTBEAT, not a hardware line: the server stamps the time of every
-        /// GETPOWERMODE and reports whether that stamp is fresh, so it means "something
-        /// is supervising my power right now".
+        /// The server's REQUEST_BEAM flag — what the engine is asking for. The
+        /// Expose and Dynamic arms raise and drop it, and CMD_CLAMPCMD writes it
+        /// directly. This one does work.
+        /// </summary>
+        public bool BeamRequest;
+
+        /// <summary>
+        /// Whether something has reported beam state within the last 200 ms —
+        /// the beam-side equivalent of <see cref="PowerServicesProvided"/>.
+        /// ALWAYS FALSE as the server stands: BEAM_SERVICES has no writer, which
+        /// is the same missing CMD_BEAMSERVICES arm. See the header.
+        /// </summary>
+        public bool BeamServices;
+
+        /// <summary>
+        /// VCC1V2 rail telemetry, or null when the PMIC is not exposed through
+        /// hwmon, the expected PMBus page is absent, or a sysfs read failed.
+        /// Read <see cref="PowerStats"/> before drawing conclusions from it.
+        /// </summary>
+        public PowerStats? Pmic;
+
+        /// <summary>
+        /// The server has heard a GETPOWERMODE request within the last 250 ms.
+        /// A HEARTBEAT, not a hardware line: it means "something is supervising
+        /// my power right now".
         ///
         /// The 250 ms window is the thing to design around. Whatever drives the
-        /// contactor has to poll <see cref="TcpManager.GetPowerModeAsync"/> FASTER than
-        /// that or this reads false even though the controller is alive and connected —
-        /// a 500 ms cadence flickers, and a 1 s cadence never shows true at all. The
-        /// Launcher polls at 150 ms for exactly this reason.
-        ///
-        /// An earlier build computed the freshness test backwards and latched true from
-        /// the first call onward; if this reads permanently true on an old server, that
-        /// is why.
+        /// contactor has to poll <see cref="TcpManager.GetPowerModeAsync"/>
+        /// FASTER than that or this reads false even though the controller is
+        /// alive and connected — a 500 ms cadence flickers and a 1 s cadence
+        /// never shows true. The Launcher polls at 150 ms for this reason.
         /// </summary>
         public bool PowerServicesProvided;
 
@@ -570,30 +728,22 @@ namespace DDR4_TestingApp
         /// <summary>A bitstream is loaded in the PL (EMIO 83).</summary>
         public bool FpgaLoaded;
 
-        /// <summary>
-        /// State of the clamp-request OUTPUT line the server drives (EMIO 88). Unlike
-        /// every other field here this reflects something the ZCU is asserting, not
-        /// something it is sensing, so it reads back whatever was last commanded —
-        /// by the engine via set_beam_request, or by CMD_CLAMPCMD.
-        /// </summary>
-        public bool ClampRequest;
-
         /// <summary>SDRAM select lines (EMIO 84-87).</summary>
         public bool Sdram0;
         public bool Sdram1;
         public bool Sdram2;
         public bool Sdram3;
 
-        /// <summary>Alias matching the server's gpio::get_beam_present naming.</summary>
+        /// <summary>Alias for the pre-rename beam_present field.</summary>
         public bool BeamPresent => BeamActive;
 
         /// <summary>The four select lines as an array, index 0-3.</summary>
         public bool[] SdramSelects => new[] { Sdram0, Sdram1, Sdram2, Sdram3 };
 
         /// <summary>
-        /// Index of the single asserted SDRAM select, or null when none or more than
-        /// one is asserted — both of which are states worth showing differently from
-        /// "chip 0 selected".
+        /// Index of the single asserted SDRAM select, or null when none or more
+        /// than one is asserted — both of which are states worth showing
+        /// differently from "chip 0 selected".
         /// </summary>
         public int? SelectedSdram
         {
@@ -748,6 +898,31 @@ namespace DDR4_TestingApp
         public ushort? ReadOptionU16() => ReadSomeTag() ? ReadU16() : null;
         public string? ReadOptionString() => ReadSomeTag() ? ReadString() : null;
         public RecordType? ReadOptionRecordType() => ReadSomeTag() ? ReadRecordType() : null;
+
+        /// <summary>power.rs PowerStats: three f64 then a bool, 25 bytes, no padding.</summary>
+        public PowerStats ReadPowerStats() => new PowerStats
+        {
+            Volts = ReadF64(),
+            Amps = ReadF64(),
+            Watts = ReadF64(),
+            PowerDerived = ReadBool(),
+        };
+
+        public PowerStats? ReadOptionPowerStats() =>
+            ReadSomeTag() ? ReadPowerStats() : (PowerStats?)null;
+
+        /// <summary>
+        /// Vec&lt;Option&lt;PowerStats&gt;&gt;. Element size varies — 1 byte for None, 26
+        /// for Some — so the length guard uses the 1-byte minimum and the per-element
+        /// reads do the real bounds checking.
+        /// </summary>
+        public PowerStats?[] ReadVecOptionPowerStats()
+        {
+            int n = ReadLen(1);
+            var a = new PowerStats?[n];
+            for (int i = 0; i < n; i++) a[i] = ReadOptionPowerStats();
+            return a;
+        }
 
         public ulong[] ReadFixedU64Array(int n)
         {
@@ -949,7 +1124,8 @@ namespace DDR4_TestingApp
         private const byte CMD_GETFPGAIMAGES = 0x16;
         private const byte CMD_REQUESTPOWERSTATE = 0x17;
         private const byte CMD_CLAMPCMD = 0x18;
-        private const byte CMD_EXPOSE = 0x19;                // NEW
+        private const byte CMD_EXPOSE = 0x19;
+        private const byte CMD_BEAMSERVICES = 0x1A;          // NEW, not dispatched
 
         /// <summary>Frame header: SYNC(4) + CMD(1) + LEN(4).</summary>
         private const int HeaderSize = 9;
@@ -1154,32 +1330,23 @@ namespace DDR4_TestingApp
         /// <summary>
         /// Queue a beam-exposure task (CMD_EXPOSE, 0x19). No reply, like the rest.
         ///
-        /// The engine touches no memory for this one. It waits for beam-possible to
-        /// hold high for 200 ms, asserts the beam request, tallies beam-present time
-        /// into <see cref="Record.ExposureTime"/>, and ends 200 ms after either
-        /// beam-possible drops or the configured exposure limit is passed.
+        /// The engine touches no memory for this one. It asserts the beam request,
+        /// accumulates beam-on-target time into <see cref="Record.ExposureTime"/>, and
+        /// ends 200 ms after either beam-active has been low for 200 ms or the
+        /// configured exposure limit is passed.
         ///
-        /// TWO WAYS THIS TASK SITS FOREVER, both worth checking before you queue it:
+        /// AS THE SERVER STANDS THIS RECORD IS ALWAYS EMPTY. is_beam_active() reads
+        /// beam.rs's BEAM_ON, which nothing writes, so the arm's beam-high timer is
+        /// never refreshed: it crosses the 200 ms hold requirement on the first pass,
+        /// the delayed exit arms, and the record completes about 400 ms in with zero
+        /// exposure, zero bit counts and an empty capture. It does not hang — it
+        /// finishes, having measured nothing. See <see cref="SetBeamServicesAsync"/>
+        /// for what is missing and how to wire it up.
         ///
-        /// 1. BEAM-POSSIBLE NEVER GOES HIGH. The arm only asserts the request after
-        ///    beam-possible has held, and only exits once it has dropped *while the
-        ///    request is asserted* — so with the facility line low from the start,
-        ///    neither condition is ever met and the engine spins in this task with the
-        ///    whole queue stalled behind it. Only <see cref="AbortAsync"/> gets it out.
-        ///    Check <see cref="InfoRsp.BeamPossible"/> first.
-        ///
-        /// 2. THE CLAMP WAS ALREADY ASSERTED. The exit test is "beam-possible has been
-        ///    low for 200 ms AND we are requesting beam". If REQUEST_BEAM is already
-        ///    true when the task starts — which a prior <see cref="SetClampAsync"/>(true)
-        ///    now causes, since CMD_CLAMPCMD writes that global — and beam-possible is
-        ///    low, the exit fires on the first iteration and the record completes about
-        ///    200 ms later with essentially zero exposure. Check
-        ///    <see cref="PowerMode.RequestBeam"/> or <see cref="InfoRsp.ClampRequest"/>,
-        ///    or just call SetClampAsync(false) first.
-        ///
-        /// With no exposure limit configured the task runs until the facility drops
-        /// beam-possible, which is the intended mode for "expose until the run ends".
-        /// Set ConfigCmd.ExposureTimeLimitEnabled for a bounded exposure.
+        /// Once beam state is actually fed in: with no exposure limit configured the
+        /// task runs until beam-active drops, which is the intended "expose until the
+        /// spill ends" mode. Set ConfigCmd.ExposureTimeLimitEnabled for a bounded
+        /// exposure, and note the limit counts BEAM-ON time, not wall clock.
         /// </summary>
         public static Task QueueExposeAsync(ushort rid, CancellationToken ct = default) =>
             SendOnlyAsync(CMD_EXPOSE, EncodeU16(rid), ct);
@@ -1216,27 +1383,74 @@ namespace DDR4_TestingApp
         // ============================== Clamp / beam request ==============================
 
         /// <summary>
-        /// Drive the beam request (CMD_CLAMPCMD, 0x18). Send-only — no reply.
+        /// Set the server's beam request (CMD_CLAMPCMD, 0x18). Send-only — no reply.
         ///
-        /// This now goes through the server's set_beam_request(), so it moves the
-        /// REQUEST_BEAM global as well as the EMIO clamp line. Everything that reads
-        /// that global follows: <see cref="PowerMode.RequestBeam"/>,
-        /// <see cref="InfoRsp.ClampRequest"/>, and Record.LogBeamRequest on any task
-        /// recording at the time. It used to poke the GPIO directly and leave the global
-        /// stale, and used to panic the handler thread (dropping the connection) if the
-        /// GPIO write failed; neither is true any more.
+        /// NOTE WHAT THIS NO LONGER DOES. It writes beam.rs's REQUEST_BEAM global and
+        /// nothing else — set_beam_request() stopped touching the GPIO this round, and
+        /// gpio::set_clamp_request has no callers left anywhere in the tree. So no
+        /// hardware line moves, and InfoRsp no longer carries a clamp readback to check
+        /// against. What it does change is what the server REPORTS it wants:
+        /// <see cref="InfoRsp.BeamRequest"/>, <see cref="PowerMode.RequestBeam"/>, and
+        /// Record.LogBeamRequest on any task recording at the time. Acting on that is
+        /// the supervising host's job — in this bench, the Launcher's beam relay.
         ///
-        /// Two things still worth knowing:
-        ///
-        /// * A running Expose or Dynamic task owns this flag and re-evaluates it every
-        ///   progress tick, so a manual change made mid-task is overwritten within
-        ///   ~200 ms. Use it between tasks, or for bench checks.
-        ///
-        /// * Leaving it asserted changes how the NEXT Expose task behaves — see
-        ///   <see cref="QueueExposeAsync"/>, case 2. Assert false before queueing one.
+        /// A running Expose or Dynamic task owns this flag and re-evaluates it every
+        /// progress tick, so a manual change made mid-task is overwritten within
+        /// ~200 ms. Use it between tasks, or for bench checks.
         /// </summary>
         public static Task SetClampAsync(bool assert, CancellationToken ct = default) =>
             SendOnlyAsync(CMD_CLAMPCMD, new BincodeWriter().Bool(assert).ToArray(), ct);
+
+        /// <summary>
+        /// Report beam-on-target to the server and read back what it wants
+        /// (CMD_BEAMSERVICES, 0x1A).
+        ///
+        /// THROWS. The command code is in config.rs and both payload structs are in
+        /// types.rs, but server.rs has no dispatch arm for 0x1A — it falls through to
+        /// the unknown-CMD branch, logs the byte and sends NOTHING. A client that sent
+        /// the frame and waited would block until the timeout and then drop the
+        /// connection, so this refuses locally instead.
+        ///
+        /// This is the missing piece that makes the whole beam path dead. BEAM_ON and
+        /// BEAM_SERVICES in beam.rs have no other writer, so InfoRsp.BeamActive,
+        /// InfoRsp.BeamServices and Record.LogBeamActive are all stuck false and the
+        /// Expose task ends ~400 ms in with zero exposure. To wire it up, add to
+        /// server.rs:
+        ///
+        /// <code>
+        /// CMD_BEAMSERVICES => match parse_payload::&lt;BeamServicesCmd&gt;(&amp;payload) {
+        ///     Ok(c) =&gt; crate::commands::beamservices_command(&amp;mut stream, c),
+        ///     Err(e) =&gt; eprintln!("[!] {}: invalid beam services params: {}", peer, e),
+        /// },
+        /// </code>
+        ///
+        /// with a handler that stores <c>c.beam_on</c> into BEAM_ON, stamps
+        /// BEAM_SERVICES with <c>Instant::now()</c>, and replies with
+        /// <c>BeamServicesRsp { beam_request: beam::get_beam_request() }</c>. Then
+        /// delete the throw below and uncomment the body — it is already correct for
+        /// that shape, and the 200 ms BEAM_SERVICES window means the caller has to poll
+        /// this faster than that, the same way GETPOWERMODE feeds
+        /// <see cref="InfoRsp.PowerServicesProvided"/>.
+        /// </summary>
+        public static Task<bool> SetBeamServicesAsync(bool beamOn, CancellationToken ct = default)
+        {
+            throw new NotSupportedException(
+                "CMD_BEAMSERVICES (0x1A) is declared in config.rs and types.rs but " +
+                "server.rs has no dispatch arm for it — the server would log an " +
+                "unknown command and never reply. Add the arm first; see the remarks " +
+                "on this method for the exact code.");
+
+            // return RunAsync(async t =>
+            // {
+            //     var payload = new BincodeWriter().Bool(beamOn).ToArray();
+            //     var p = await RequestAsync(CMD_BEAMSERVICES, payload,
+            //                                CMD_BEAMSERVICES, t).ConfigureAwait(false);
+            //     var r = new BincodeReader(p);
+            //     bool wantsBeam = r.ReadBool();
+            //     r.ExpectEnd("BeamServicesRsp");
+            //     return wantsBeam;
+            // }, DefaultTimeout, ct);
+        }
 
         // ============================== Engine status ==============================
 
@@ -1272,11 +1486,9 @@ namespace DDR4_TestingApp
         /// Watch <see cref="EngineStatus.IsStalled"/> and always pass a cancellation
         /// token.
         ///
-        /// For <see cref="RecordType.Expose"/> the indefinite case is the NORMAL one:
-        /// with no exposure limit configured the task runs until the facility drops
-        /// beam-possible, and the two failure modes in
-        /// <see cref="QueueExposeAsync"/> never finish at all. Progress reporting is
-        /// also unusable there — see <see cref="EngineStatus.RecordProgress"/>.
+        /// <see cref="RecordType.Expose"/> is the opposite problem right now: it
+        /// returns almost immediately with an empty record, because nothing feeds the
+        /// server beam state. See <see cref="QueueExposeAsync"/>.
         /// </summary>
         public static async Task<Record?> RunTaskAsync(
             RecordType type,
@@ -1587,7 +1799,9 @@ namespace DDR4_TestingApp
 
         /// <summary>
         /// Every image available in /dvr/fpga, as the bare stem flash expects
-        /// ("memtest" for memtest.bit.bin). An EMPTY LIST IS AMBIGUOUS: it means the
+        /// ("memtest" for memtest.bit — the server dropped the .bit.bin suffix this
+        /// round, so a directory still holding .bit.bin files now lists as empty).
+        /// An EMPTY LIST IS AMBIGUOUS beyond that: it means the
         /// directory is empty, missing, or unreadable — the last of which is the normal
         /// state while /dvr is unmounted in safe mode. Don't present it as "no images".
         /// </summary>
@@ -1603,7 +1817,8 @@ namespace DDR4_TestingApp
             }, DefaultTimeout, ct);
 
         /// <summary>
-        /// Load /dvr/fpga/&lt;imageName&gt;.bit.bin via fpgautil. Returns false if the
+        /// Load /dvr/fpga/&lt;imageName&gt;.bit via fpgautil — note the suffix changed
+        /// from .bit.bin this round. Returns false if the
         /// name was rejected, the file was missing, the engine was busy, or fpgautil
         /// failed. After a successful flash the MIG re-trains, so wait for
         /// <see cref="InfoRsp.ControllerCalibrated"/> before queueing work.
@@ -1640,14 +1855,15 @@ namespace DDR4_TestingApp
                 // Declaration order from types.rs — see the note on InfoRsp.
                 var info = new InfoRsp
                 {
-                    BeamPossible = r.ReadBool(),
                     BeamActive = r.ReadBool(),
+                    BeamRequest = r.ReadBool(),
+                    BeamServices = r.ReadBool(),
+                    Pmic = r.ReadOptionPowerStats(),
                     PowerServicesProvided = r.ReadBool(),
                     ControllerCalibrated = r.ReadBool(),
                     UiClock = r.ReadBool(),
                     PlClock = r.ReadBool(),
                     FpgaLoaded = r.ReadBool(),
-                    ClampRequest = r.ReadBool(),
                     Sdram0 = r.ReadBool(),
                     Sdram1 = r.ReadBool(),
                     Sdram2 = r.ReadBool(),
@@ -1916,9 +2132,9 @@ namespace DDR4_TestingApp
         // reordering a line here silently decodes the wrong bytes rather than failing
         // to compile. Keep the order identical to record.rs / run.rs.
         //
-        // The three beam series are PRESENT, POSSIBLE, REQUEST in that order — not
-        // alphabetical, and not the order task_engine.rs pushes them in (which is
-        // possible, present, request). record.rs declaration order is what counts.
+        // The beam series are ACTIVE then REQUEST. task_engine.rs pushes them in that
+        // order too, but don't rely on that — record.rs declaration order is what
+        // bincode follows, and the two have disagreed before.
         private static Record DecodeRecord(BincodeReader r) => new Record
         {
             TimeStarted = r.ReadU64(),
@@ -1941,10 +2157,10 @@ namespace DDR4_TestingApp
             LogBitsCorrect = r.ReadVecU64(),
             LogErrorRate = r.ReadVecF64(),
             LogCurrentAddress = r.ReadVecU32(),
-            LogBeamPresent = r.ReadVecBool(),
-            LogBeamPossible = r.ReadVecBool(),
+            LogBeamActive = r.ReadVecBool(),
             LogBeamRequest = r.ReadVecBool(),
             LogSefiDetected = r.ReadVecBool(),
+            LogPmic = r.ReadVecOptionPowerStats(),
             LogAdjErrBins = r.ReadVecFixedU64Array(8),
             LogErrBins = r.ReadVecFixedU64Array(9),
         };

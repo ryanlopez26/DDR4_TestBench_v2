@@ -63,9 +63,10 @@
             syncStatus = new Button();
             sendConfig = new Button();
             groupBox12 = new GroupBox();
-            exposureLimitEnabled = new CheckBox();
-            exposureLimitMs = new TextBox();
             exposureSeconds = new Label();
+            exposureLimitMs = new TextBox();
+            exposureLimitEnabled = new CheckBox();
+            enableDumps = new CheckBox();
             groupBox45.SuspendLayout();
             groupBox49.SuspendLayout();
             groupBox6.SuspendLayout();
@@ -85,6 +86,7 @@
             // 
             // groupBox45
             // 
+            groupBox45.Controls.Add(enableDumps);
             groupBox45.Controls.Add(blockFactor);
             groupBox45.Controls.Add(groupBox49);
             groupBox45.Controls.Add(label5);
@@ -292,13 +294,15 @@
             groupBox7.TabStop = false;
             groupBox7.Text = "Available Images";
             // 
-            // fpgaImages
+            // flashFPGA
             // 
-            fpgaImages.FormattingEnabled = true;
-            fpgaImages.Location = new Point(7, 21);
-            fpgaImages.Name = "fpgaImages";
-            fpgaImages.Size = new Size(196, 23);
-            fpgaImages.TabIndex = 31;
+            flashFPGA.Font = new Font("Segoe UI", 9F);
+            flashFPGA.Location = new Point(281, 19);
+            flashFPGA.Name = "flashFPGA";
+            flashFPGA.Size = new Size(66, 27);
+            flashFPGA.TabIndex = 33;
+            flashFPGA.Text = "Flash";
+            flashFPGA.UseVisualStyleBackColor = true;
             // 
             // refreshFPGA
             // 
@@ -310,15 +314,13 @@
             refreshFPGA.Text = "Refresh";
             refreshFPGA.UseVisualStyleBackColor = true;
             // 
-            // flashFPGA
+            // fpgaImages
             // 
-            flashFPGA.Font = new Font("Segoe UI", 9F);
-            flashFPGA.Location = new Point(281, 19);
-            flashFPGA.Name = "flashFPGA";
-            flashFPGA.Size = new Size(66, 27);
-            flashFPGA.TabIndex = 33;
-            flashFPGA.Text = "Flash";
-            flashFPGA.UseVisualStyleBackColor = true;
+            fpgaImages.FormattingEnabled = true;
+            fpgaImages.Location = new Point(7, 21);
+            fpgaImages.Name = "fpgaImages";
+            fpgaImages.Size = new Size(196, 23);
+            fpgaImages.TabIndex = 31;
             // 
             // groupBox5
             // 
@@ -430,6 +432,23 @@
             groupBox12.TabStop = false;
             groupBox12.Text = "Exposure (ms)";
             // 
+            // exposureSeconds
+            // 
+            exposureSeconds.AutoSize = true;
+            exposureSeconds.Location = new Point(70, 51);
+            exposureSeconds.Name = "exposureSeconds";
+            exposureSeconds.Size = new Size(32, 15);
+            exposureSeconds.TabIndex = 37;
+            exposureSeconds.Text = "= 0 s";
+            // 
+            // exposureLimitMs
+            // 
+            exposureLimitMs.Location = new Point(8, 47);
+            exposureLimitMs.Name = "exposureLimitMs";
+            exposureLimitMs.Size = new Size(58, 23);
+            exposureLimitMs.TabIndex = 36;
+            exposureLimitMs.Text = "0";
+            // 
             // exposureLimitEnabled
             // 
             exposureLimitEnabled.AutoSize = true;
@@ -440,22 +459,15 @@
             exposureLimitEnabled.Text = "Time Limit";
             exposureLimitEnabled.UseVisualStyleBackColor = true;
             // 
-            // exposureLimitMs
+            // enableDumps
             // 
-            exposureLimitMs.Location = new Point(8, 47);
-            exposureLimitMs.Name = "exposureLimitMs";
-            exposureLimitMs.Size = new Size(58, 23);
-            exposureLimitMs.TabIndex = 36;
-            exposureLimitMs.Text = "0";
-            // 
-            // exposureSeconds
-            // 
-            exposureSeconds.AutoSize = true;
-            exposureSeconds.Location = new Point(70, 51);
-            exposureSeconds.Name = "exposureSeconds";
-            exposureSeconds.Size = new Size(23, 15);
-            exposureSeconds.TabIndex = 37;
-            exposureSeconds.Text = "= 0 s";
+            enableDumps.AutoSize = true;
+            enableDumps.Location = new Point(284, 19);
+            enableDumps.Name = "enableDumps";
+            enableDumps.Size = new Size(102, 19);
+            enableDumps.TabIndex = 35;
+            enableDumps.Text = "Enable Dumps";
+            enableDumps.UseVisualStyleBackColor = true;
             // 
             // ConfigEditor
             // 
@@ -535,5 +547,6 @@
         private Label exposureSeconds;
         private TextBox exposureLimitMs;
         private CheckBox exposureLimitEnabled;
+        private CheckBox enableDumps;
     }
 }

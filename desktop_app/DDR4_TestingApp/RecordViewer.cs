@@ -29,13 +29,22 @@ namespace DDR4_TestingApp
 
         // ---- Digital-lane geometry for the boolean signals ---------------------
         //
-        // The record now carries FOUR series that live in {0,1} — beam possible, beam
-        // present, beam request, SEFI — plus error rate in 0..1. Drawn raw they land on
-        // top of each other and the plot shows one line where there are five. Each gets
-        // its own horizontal band instead, logic-analyzer style: lane k occupies
+        // Three series live in {0,1} — beam active, beam request, SEFI — plus error
+        // rate in 0..1. Drawn raw they land on top of each other and the plot shows one
+        // line where there are four. Each gets its own horizontal band instead,
+        // logic-analyzer style: lane k occupies
         // [k*LanePitch, k*LanePitch + LaneHeight] on the right axis.
         private const double LanePitch = 1.25;
         private const double LaneHeight = 0.85;
+
+        // ---- Cached secondary axes --------------------------------------------
+        //
+        // Created once in ConfigureControls and reused on every Populate. Plot.Clear()
+        // empties the plottable list but does NOT remove axes, so calling
+        // Axes.AddRightAxis() per refresh stacked a new axis on every reload — four
+        // reloads, four right-hand axis strips eating the plot width.
+        private ScottPlot.IYAxis logRightAxis = null!;
+        private ScottPlot.IYAxis pmicRightAxis = null!;
 
         /// <summary>Designer / blank-state constructor. Call <see cref="LoadAsync"/> yourself.</summary>
         public RecordViewer()
@@ -80,13 +89,13 @@ namespace DDR4_TestingApp
 
         private void ConfigureControls()
         {
-            // RecordViewer.Designer.cs sets splitContainer1.Enabled = false, and Enabled
-            // CASCADES: Control.Enabled's getter walks up the parent chain, so while an
-            // ancestor is disabled every descendant renders and behaves disabled no
-            // matter what is set on the child. That silently overrode the buttons' own
-            // Enabled and greyed the text boxes and plots along with them. The real fix
-            // is setting Enabled back to True on splitContainer1 in the designer
-            // Properties window; this line is here so the form behaves either way.
+            // The designer used to ship splitContainer1 with Enabled = false, and
+            // Enabled CASCADES: Control.Enabled's getter walks up the parent chain, so
+            // while an ancestor is disabled every descendant renders and behaves
+            // disabled no matter what is set on the child. That silently overrode the
+            // buttons' own Enabled and greyed the text boxes and plots with them. Fixed
+            // in the designer now; this line stays so the form behaves either way if
+            // the designer surface is ever re-saved with the old value.
             splitContainer1.Enabled = true;
 
             foreach (var box in new[] { startTime, endTime, duration, processed_bits,
@@ -111,8 +120,16 @@ namespace DDR4_TestingApp
             conclusion_status.TabStop = false;
 
             log_plot.Plot.Axes.Bottom.Label.Text = "Time (s)";
+            pmic_plot.Plot.Axes.Bottom.Label.Text = "Time (s)";
             err_bins_plot.Plot.Axes.Bottom.Label.Text = "Flipped bits in byte";
             adj_err_bins_plot.Plot.Axes.Bottom.Label.Text = "Adjacent flipped pairs";
+
+            // Once, not per refresh — see the field declarations.
+            logRightAxis = log_plot.Plot.Axes.AddRightAxis();
+            logRightAxis.Label.Text = "Signals (stacked)";
+
+            pmicRightAxis = pmic_plot.Plot.Axes.AddRightAxis();
+            pmicRightAxis.Label.Text = "Current (A) / Power (W)";
         }
 
         private void WireEvents()
@@ -181,7 +198,8 @@ namespace DDR4_TestingApp
             exposure_time.Text = "";
             time_to_sefi.Text = "";
 
-            foreach (var pane in new[] { log_plot, err_bins_plot, adj_err_bins_plot })
+            foreach (var pane in new[] { log_plot, pmic_plot,
+                                         err_bins_plot, adj_err_bins_plot })
             {
                 pane.Plot.Clear();
                 pane.Refresh();
@@ -238,7 +256,15 @@ namespace DDR4_TestingApp
                 ? $"{r.TimeToSefi.Value:0.###} s" : "—";
 
             // --- plots ----------------------------------------------------------
-            PlotSignals(r);
+            // The two time-series panes sit side by side at the same height in the
+            // layout, so they are meant to be read against each other: a rail sag in
+            // the right-hand pane lines up with a spill in the left one. That only
+            // works if they share an x range, which TimeAxis computes once and both
+            // plots are pinned to.
+            (double[] t, bool usingIndex) = TimeAxis(r);
+
+            PlotSignals(r, t, usingIndex);
+            PlotPmic(r, t, usingIndex);
             PlotBins(err_bins_plot, r.ErrBins, 9);
             PlotBins(adj_err_bins_plot, r.AdjErrBins, 8);
 
@@ -248,110 +274,278 @@ namespace DDR4_TestingApp
         // ============================== Signals plot ==============================
 
         /// <summary>
-        /// One trace per non-empty log series, against log_timestamp.
+        /// The shared x axis for both time-series panes, plus whether it is real time
+        /// or a sample index.
+        ///
+        /// log_timestamp is the natural axis, but a record can carry samples with no
+        /// timestamps at all, in which case the series are still worth seeing against
+        /// their index. Computed once so the signals pane and the PMIC pane cannot
+        /// disagree about what x means.
+        /// </summary>
+        private static (double[] t, bool usingIndex) TimeAxis(Record r)
+        {
+            if (r.LogTimestamp.Length > 0)
+                return (r.LogTimestamp, false);
+
+            int longest = new[]
+            {
+                r.LogBitsProcessed.Length, r.LogBitsCorrect.Length,
+                r.LogBitsIncorrect.Length, r.LogErrorRate.Length,
+                r.LogCurrentAddress.Length, r.LogBeamActive.Length,
+                r.LogBeamRequest.Length, r.LogSefiDetected.Length,
+                r.LogPmic.Length,
+            }.Max();
+
+            return (Enumerable.Range(0, longest).Select(i => (double)i).ToArray(), true);
+        }
+
+        /// <summary>
+        /// Pin a pane's x range to the shared axis, leaving y autoscaled.
+        ///
+        /// AutoScale sets both axes, so the x override has to come after it. A single
+        /// sample would give a zero-width range, which ScottPlot renders as a blank
+        /// pane, hence the minimum span.
+        /// </summary>
+        private static void PinTimeAxis(ScottPlot.WinForms.FormsPlot pane, double[] t)
+        {
+            if (t.Length == 0) return;
+
+            double lo = t[0], hi = t[t.Length - 1];
+            if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+            else
+            {
+                double pad = (hi - lo) * 0.02;
+                lo -= pad; hi += pad;
+            }
+            pane.Plot.Axes.SetLimitsX(lo, hi);
+        }
+
+        // ============================== Signals plot ==============================
+
+        /// <summary>
+        /// One trace per non-empty log series, against the shared time axis.
         ///
         /// Three things make this fiddlier than it looks.
         ///
         /// First, the server pushes a DIFFERENT SUBSET of series depending on record
-        /// type and never pads them, so several of the twelve fields are empty in any
-        /// given record. Each series is trimmed against the timestamps independently
-        /// rather than assumed parallel.
+        /// type and never pads them, so several fields are empty in any given record.
+        /// Each series is trimmed against the timestamps independently rather than
+        /// assumed parallel.
         ///
         /// Second, the magnitudes span nine orders of magnitude (bits processed ~1e9,
         /// error rate 0..1, the flags 0/1), so the counters get the left axis and
         /// everything unit-scale goes on a right axis. On one shared axis everything
         /// except the largest trace flattens onto the baseline.
         ///
-        /// Third — new this round — there are now FOUR boolean series rather than one.
-        /// Beam possible, beam present, beam request and SEFI all take the values 0 and
-        /// 1, so stacking them into separate lanes is the only way all four stay
-        /// readable. Reading beam request against beam present is the point of the
-        /// split: it separates "we asked and got beam" from "we asked and waited".
+        /// Third, three series live in {0,1} — beam active, beam request and SEFI — so
+        /// stacking them into separate lanes is the only way all three stay readable.
+        /// Reading beam request against beam active is the point: it separates "we asked
+        /// and got beam" from "we asked and waited". On the current server it also shows
+        /// the dead beam path at a glance, because request goes high and active never
+        /// does — nothing writes beam.rs's BEAM_ON.
         /// </summary>
-        private void PlotSignals(Record r)
+        private void PlotSignals(Record r, double[] t, bool usingIndex)
         {
             var plot = log_plot.Plot;
             plot.Clear();
 
-            double[] t = r.LogTimestamp;
-
-            // Fall back to sample index if there are no timestamps, so the series are
-            // still readable.
-            bool usingIndex = t.Length == 0;
-            if (usingIndex)
+            if (t.Length == 0)
             {
-                int longest = new[]
-                {
-                    r.LogBitsProcessed.Length, r.LogBitsCorrect.Length,
-                    r.LogBitsIncorrect.Length, r.LogErrorRate.Length,
-                    r.LogCurrentAddress.Length, r.LogBeamPresent.Length,
-                    r.LogBeamPossible.Length, r.LogBeamRequest.Length,
-                    r.LogSefiDetected.Length,
-                }.Max();
-
-                if (longest == 0)
-                {
-                    plot.Axes.Bottom.Label.Text = "No log data in this record";
-                    log_plot.Refresh();
-                    return;
-                }
-
-                t = Enumerable.Range(0, longest).Select(i => (double)i).ToArray();
+                plot.Axes.Bottom.Label.Text = "No log data in this record";
+                log_plot.Refresh();
+                return;
             }
 
             plot.Axes.Bottom.Label.Text = usingIndex ? "Sample index" : "Time (s)";
             plot.Axes.Left.Label.Text = "Bits / address";
 
-            // Right-hand axis carries the stacked lanes.
-            var rightAxis = plot.Axes.AddRightAxis();
-            rightAxis.Label.Text = "Signals (stacked)";
-
             bool any = false;
 
             // --- counters, left axis ---------------------------------------------
-            any |= AddSeries(t, ToDouble(r.LogBitsProcessed), "Bits Processed", null);
-            any |= AddSeries(t, ToDouble(r.LogBitsCorrect), "Bits Correct", null);
-            any |= AddSeries(t, ToDouble(r.LogBitsIncorrect), "Bits Incorrect", null);
-            any |= AddSeries(t, ToDouble(r.LogCurrentAddress), "Address", null);
+            any |= AddSeries(log_plot, t, ToDouble(r.LogBitsProcessed), "Bits Processed", null);
+            any |= AddSeries(log_plot, t, ToDouble(r.LogBitsCorrect), "Bits Correct", null);
+            any |= AddSeries(log_plot, t, ToDouble(r.LogBitsIncorrect), "Bits Incorrect", null);
+            any |= AddSeries(log_plot, t, ToDouble(r.LogCurrentAddress), "Address", null);
 
             // --- lanes, right axis -------------------------------------------------
             // Lanes are allocated bottom-up and only to series that have data, so a
-            // Read record (two flags) does not leave three empty bands.
+            // Read record does not leave empty bands.
             int lane = 0;
 
-            if (AddLane(t, r.LogErrorRate, "Error Rate", rightAxis, lane, isBool: false))
+            if (AddLane(log_plot, t, r.LogErrorRate, "Error Rate", logRightAxis, lane, isBool: false))
             { any = true; lane++; }
 
-            if (AddLane(t, ToDouble(r.LogBeamPossible), "Beam Possible", rightAxis, lane, isBool: true))
+            if (AddLane(log_plot, t, ToDouble(r.LogBeamRequest), "Beam Request", logRightAxis, lane, isBool: true))
             { any = true; lane++; }
 
-            if (AddLane(t, ToDouble(r.LogBeamPresent), "Beam Present", rightAxis, lane, isBool: true))
+            if (AddLane(log_plot, t, ToDouble(r.LogBeamActive), "Beam Active", logRightAxis, lane, isBool: true))
             { any = true; lane++; }
 
-            if (AddLane(t, ToDouble(r.LogBeamRequest), "Beam Request", rightAxis, lane, isBool: true))
-            { any = true; lane++; }
-
-            if (AddLane(t, ToDouble(r.LogSefiDetected), "SEFI", rightAxis, lane, isBool: true))
+            if (AddLane(log_plot, t, ToDouble(r.LogSefiDetected), "SEFI", logRightAxis, lane, isBool: true))
             { any = true; lane++; }
 
             if (any) plot.ShowLegend();
 
             plot.Axes.AutoScale();
+            PinTimeAxis(log_plot, t);
             log_plot.Refresh();
         }
 
+        // ============================== PMIC plot ==============================
+
         /// <summary>
+        /// Rail telemetry over the record: voltage on the left axis, current and power
+        /// on the right.
+        ///
+        /// Voltage gets its own axis because its interesting variation is millivolts
+        /// around 1.2 while current swings over a decade — on one axis the rail trace is
+        /// a flat line. The sag is the number worth having here, so the legend carries
+        /// each series' min and max rather than just a peak.
+        ///
+        /// WHAT THIS RAIL IS. VCC1V2 on the IRPS5401, PHASE_C. It feeds the SODIMM
+        /// socket, PL banks 64/65/66 driving it, AND PS bank 504 for the PS-side DDR4.
+        /// A step here is not necessarily the device under test — for per-device current
+        /// during a beam run, the INA293 shunt path on the custom SODIMM cards is the
+        /// measurement, not this.
+        /// </summary>
+        private void PlotPmic(Record r, double[] t, bool usingIndex)
+        {
+            var plot = pmic_plot.Plot;
+            plot.Clear();
+
+            if (t.Length == 0 || r.LogPmic.Length == 0)
+            {
+                plot.Axes.Bottom.Label.Text = r.LogPmic.Length == 0
+                    ? "No PMIC samples in this record"
+                    : "No log data in this record";
+                pmic_plot.Refresh();
+                return;
+            }
+
+            plot.Axes.Bottom.Label.Text = usingIndex ? "Sample index" : "Time (s)";
+            plot.Axes.Left.Label.Text = "Rail (V)";
+
+            // Any derived sample taints the power trace: that figure is Volts * Amps
+            // from two readings taken at different instants, so it drifts under a
+            // changing load rather than being measured. Say so in the legend instead of
+            // presenting all three as equally trustworthy.
+            bool derived = r.LogPmic.Any(p => p.HasValue && p.Value.PowerDerived);
+
+            bool any = AddPmicSeries(t, r.LogPmic, p => p.Volts, "V", "Rail", null);
+            any |= AddPmicSeries(t, r.LogPmic, p => p.Amps, "A", "Current", pmicRightAxis);
+            any |= AddPmicSeries(t, r.LogPmic, p => p.Watts, "W",
+                                 derived ? "Power (derived)" : "Power", pmicRightAxis);
+
+            if (!any)
+            {
+                // Every sample was null: the PMIC was not exposed through hwmon for the
+                // whole record. Different from a rail reading zero, and worth saying.
+                plot.Axes.Bottom.Label.Text = "PMIC unavailable for every sample";
+                pmic_plot.Refresh();
+                return;
+            }
+
+            plot.ShowLegend();
+            plot.Axes.AutoScale();
+            PinTimeAxis(pmic_plot, t);
+            pmic_plot.Refresh();
+        }
+
+        /// <summary>
+        /// Add one field of the PMIC series, drawn as contiguous runs.
+        ///
+        /// A null entry is a GAP, not a zero — that sample's sysfs read failed, or the
+        /// PMIC was not exposed at the time. Joining across it would draw a straight line
+        /// through a hole the rail never traced, which on a voltage plot reads as a
+        /// clean ramp where there is actually no data. So each run of consecutive
+        /// readings becomes its own scatter, sharing the colour the first one was
+        /// assigned and leaving the gaps blank.
+        /// </summary>
+        private bool AddPmicSeries(double[] xs, PowerStats?[] pmic,
+                                   Func<PowerStats, double> pick, string unit,
+                                   string label, ScottPlot.IYAxis? axis)
+        {
+            int n = Math.Min(xs.Length, pmic.Length);
+            if (n == 0) return false;
+
+            var runs = new List<(List<double> X, List<double> Y)>();
+            List<double>? rx = null;
+            List<double>? ry = null;
+            double lo = double.MaxValue, hi = double.MinValue;
+            int taken = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                if (pmic[i] is PowerStats p)
+                {
+                    double v = pick(p);
+                    if (double.IsNaN(v) || double.IsInfinity(v)) { rx = null; ry = null; continue; }
+
+                    if (rx is null)
+                    {
+                        rx = new List<double>();
+                        ry = new List<double>();
+                        runs.Add((rx, ry));
+                    }
+                    rx.Add(xs[i]);
+                    ry!.Add(v);
+
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                    taken++;
+                }
+                else
+                {
+                    rx = null;
+                    ry = null;
+                }
+            }
+
+            if (taken == 0) return false;
+
+            int gaps = n - taken;
+            string range = lo == hi
+                ? $"{lo:0.000} {unit}"
+                : $"{lo:0.000}–{hi:0.000} {unit}";
+            string note = gaps > 0 ? $", {gaps} gap{(gaps == 1 ? "" : "s")}" : "";
+
+            ScottPlot.Color? colour = null;
+            foreach (var (runX, runY) in runs)
+            {
+                // A run of one is a lone sample between two gaps. With MarkerSize 0 it
+                // would draw nothing at all, so give those a marker.
+                var scatter = pmic_plot.Plot.Add.Scatter(runX.ToArray(), runY.ToArray());
+                scatter.MarkerSize = runY.Count == 1 ? 4 : 0;
+
+                if (colour is null)
+                {
+                    colour = scatter.Color;
+                    scatter.LegendText = $"{label} ({range}{note})";
+                }
+                else
+                {
+                    scatter.Color = colour.Value;
+                }
+
+                if (axis != null) scatter.Axes.YAxis = axis;
+            }
+
+            return true;
+        }
+
+
         /// Add one trace, trimmed to the shorter of x and y. Returns false if the series
         /// was empty (a "blank vec") and nothing was plotted.
         /// </summary>
-        private bool AddSeries(double[] xs, double[] ys, string label, ScottPlot.IYAxis? axis)
+        private bool AddSeries(ScottPlot.WinForms.FormsPlot pane, double[] xs,
+                               double[] ys, string label, ScottPlot.IYAxis? axis)
         {
             if (ys.Length == 0) return false;
 
             var (x, y) = Align(xs, ys);
             if (x.Length == 0) return false;
 
-            var scatter = log_plot.Plot.Add.Scatter(x, y);
+            var scatter = pane.Plot.Add.Scatter(x, y);
 
             // Peak in the label: with four counters sharing the left axis, the smaller
             // ones are visually flat and the legend is the only place to read them.
@@ -373,7 +567,8 @@ namespace DDR4_TestingApp
         /// number actually wanted — "beam present 62% of samples" says more about a run
         /// than the shape of the trace does.
         /// </summary>
-        private bool AddLane(double[] xs, double[] ys, string label,
+        private bool AddLane(ScottPlot.WinForms.FormsPlot pane, double[] xs,
+                             double[] ys, string label,
                              ScottPlot.IYAxis axis, int lane, bool isBool)
         {
             if (ys.Length == 0) return false;
@@ -391,7 +586,7 @@ namespace DDR4_TestingApp
             if (isBool)
                 (x, laneY) = ToSteps(x, laneY);
 
-            var scatter = log_plot.Plot.Add.Scatter(x, laneY);
+            var scatter = pane.Plot.Add.Scatter(x, laneY);
             scatter.MarkerSize = 0;
 
             scatter.LegendText = isBool
@@ -408,9 +603,9 @@ namespace DDR4_TestingApp
         /// A series SHORTER than the timestamps is simply truncated against. A series
         /// LONGER than them is index-resampled rather than truncated, because truncating
         /// would silently show only the first part of the run compressed onto the whole
-        /// axis. That case is real: the engine's Expose arm pushes log_beam_possible
-        /// twice per progress tick, so on an Expose record that series arrives at
-        /// roughly twice the length of every other one.
+        /// axis. The Expose arm used to push log_beam_possible twice per progress tick,
+        /// which produced exactly that; it is fixed server-side, but records written
+        /// before the fix are still on the card and still load.
         /// </summary>
         private static (double[] xs, double[] ys) Align(double[] xs, double[] ys)
         {

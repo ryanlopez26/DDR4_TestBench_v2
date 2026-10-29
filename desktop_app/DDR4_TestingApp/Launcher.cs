@@ -36,6 +36,21 @@ namespace DDR4_TestingApp
     /// that has lost comms still needs to finish booting and reconnect. With no link
     /// the beam relay drops. Beam that nothing is watching is beam that gets turned
     /// off. See ComputeDesiredPower / ComputeDesiredBeam.
+    ///
+    /// Two beam-request readouts exist and they are not duplicates. The one in the
+    /// BEAM RELAY pane is what THIS launcher has decided to drive, override included.
+    /// The one in FACILITY SERVICES is what the ZCU reports it wants. They agree while
+    /// the override is on AUTO and diverge the moment it is not, which is the whole
+    /// point of showing both.
+    ///
+    /// ONE GAP WORTH KNOWING. The launcher cannot currently close the beam loop. The
+    /// ZCU has no way to learn whether beam is actually on target: CMD_BEAMSERVICES
+    /// (0x1A) is declared on both sides but server.rs has no dispatch arm, so beam.rs's
+    /// BEAM_ON and BEAM_SERVICES have no writer. InfoRsp.BeamActive and BeamServices
+    /// are therefore stuck false, and an Expose task ends in about 400 ms having
+    /// measured nothing. The BEAM ACTIVE pill greys itself rather than claiming "no
+    /// beam" about a reading nobody has supplied. See PowerLoopAsync for where the
+    /// report would go once that arm exists.
     /// </summary>
     public partial class Launcher : Form
     {
@@ -52,7 +67,7 @@ namespace DDR4_TestingApp
         /// sends only Option&lt;RecordType&gt;, a progress number, the idle flag and the
         /// pending queue, so a poll is about twenty bytes and this can be brisk again.
         /// </summary>
-        private static readonly TimeSpan EnginePollInterval = TimeSpan.FromMilliseconds(750);
+        private static readonly TimeSpan EnginePollInterval = TimeSpan.FromMilliseconds(500);
 
         private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
         private const int ReconnectMaxAttempts = 180;        // 5 s x 180 = 15 minutes
@@ -62,6 +77,20 @@ namespace DDR4_TestingApp
 
         /// <summary>Half-period of the restart flash.</summary>
         private const long FlashPeriodMs = 400;
+
+        // ---- PMIC rail limits -------------------------------------------------
+        //
+        // The reading is the IRPS5401's VCC1V2 rail (PHASE_C, PMBus page 2), nominal
+        // 1.2 V. +/-5% is the window the voltage pill is coloured against. Current and
+        // power have no fixed envelope — they depend on what the PL is doing — so those
+        // two are rendered as plain readings with no verdict attached.
+        //
+        // Worth remembering what this rail carries: the SODIMM socket, PL banks 64/65/66
+        // driving it, AND PS bank 504 for the PS-side DDR4. A number here moving is not
+        // necessarily the SODIMM moving.
+
+        private const double RailNominalVolts = 1.2;
+        private const double RailToleranceFraction = 0.05;
 
         // ====================== Palette ======================
 
@@ -85,6 +114,23 @@ namespace DDR4_TestingApp
 
         /// <summary>Misconfiguration, not a hardware state.</summary>
         private static readonly Color FaultColor = Color.FromArgb(0x8E, 0x44, 0xAD);
+
+        // ---- PMIC readout ------------------------------------------------------
+        //
+        // Yellow on black: an instrument readout rather than a status pill. These are
+        // measured numbers, not pass/fail states — a current reading is not "good", it
+        // is just a reading, and painting it green trains the eye to stop looking at it.
+        //
+        // The background stays black even with no reading, so the pane does not appear
+        // to change function when the link drops; only the digits dim, the way an
+        // unlit segment does.
+
+        private static readonly Color ReadoutBack = Color.Black;
+        private static readonly Color ReadoutText = Color.Yellow;
+        private static readonly Color ReadoutDim = Color.FromArgb(0x60, 0x60, 0x60);
+
+        /// <summary>Out-of-tolerance rail voltage. A red segment, as on any instrument.</summary>
+        private static readonly Color ReadoutAlarm = Color.FromArgb(0xFF, 0x55, 0x44);
 
         private static readonly Color ModeSelected = TrueColor;
         private static readonly Color ModeUnselected = Color.Black;
@@ -281,7 +327,7 @@ namespace DDR4_TestingApp
             statusPills = new[]
             {
                 psStatus, fpgaStatus, plStatus, uiStatus, calbStatus,
-                clampStatus, activeStatus, possibleStatus,
+                servicesStatus, beamRequestInfo, beamActiveInfo,
                 sdram0, sdram1, sdram2, sdram3,
             };
 
@@ -303,6 +349,24 @@ namespace DDR4_TestingApp
                 pill.ForeColor = Color.White;
             }
 
+            // The PMIC readouts are Labels, not Buttons, and that is load-bearing.
+            //
+            // A DISABLED BUTTON DOES NOT USE ForeColor FOR ITS TEXT. WinForms draws it
+            // in a colour derived from the BackColor instead, which on the mid-tone
+            // greens and reds of the status pills lands somewhere readable — so the
+            // `ForeColor = Color.White` above has quietly been a no-op all along and
+            // nobody noticed. On black it derives black, and the digits vanish.
+            //
+            // Keeping them enabled and neutering the hover and focus cues would also
+            // work, but a numeric readout was never a button; it is only one here
+            // because this pane was copied from the status pills. A Label honours
+            // ForeColor, cannot take focus, and needs no FlatStyle at all.
+            foreach (var readout in new[] { pmicVolts, pmicAmps, pmicWatts })
+            {
+                readout.BackColor = ReadoutBack;
+                readout.ForeColor = ReadoutText;
+            }
+
             foreach (var pill in statusPills)
             {
                 pill.Enabled = false;
@@ -315,6 +379,9 @@ namespace DDR4_TestingApp
                 pill.Enabled = false;
                 pill.TabStop = false;
             }
+
+            // Labels are left ENABLED. A disabled Label greys its own text, which would
+            // undo the whole point; they are not interactive regardless.
 
             // Mode buttons stay clickable; black unselected, green selected.
             foreach (var b in new[] { powerOn, powerAUTO, powerOFF, beamOn, beamAUTO, beamOFF })
@@ -343,6 +410,7 @@ namespace DDR4_TestingApp
 
             ApplyEngineOffline();
             ApplyInfoOffline();
+            ApplyPmicOffline("not connected");
             ApplyModeButtons();
             PaintPowerStatus();
             PaintBeamStatus();
@@ -570,8 +638,8 @@ namespace DDR4_TestingApp
             //            "Force the beam relay closed?\n\n" +
             //            "This asserts beam-enable regardless of what the ZCU is asking " +
             //            "for, and holds it asserted even if the link drops or a task " +
-            //            "aborts. The ZCU's own clamp line is NOT changed, so the CLAMP " +
-            //            "indicator will disagree with this relay.",
+            //            "aborts. The ZCU is not told, so the BEAM REQUEST pill in " +
+            //            "FACILITY SERVICES will disagree with this relay.",
             //            "Force Beam On", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
             //        != DialogResult.Yes)
             //        return;
@@ -717,6 +785,17 @@ namespace DDR4_TestingApp
 
                         HandlePowerRequest(pm);
                         HandleBeamRequest(pm);
+
+                        // Where the beam-state report belongs once server.rs has a
+                        // CMD_BEAMSERVICES arm. This loop is the natural place for it:
+                        // it already runs at 150 ms, inside the server's 200 ms
+                        // BEAM_SERVICES window, and beamActual is the closest thing the
+                        // bench has to ground truth about beam on target.
+                        //
+                        //   await TcpManager.SetBeamServicesAsync(beamActual == true, ct);
+                        //
+                        // SetBeamServicesAsync throws today rather than hanging, so it
+                        // stays commented until that arm lands.
                     }
                     catch (OperationCanceledException) { return; }
                     catch (Exception ex) when (IsConnectionFault(ex))
@@ -1107,20 +1186,34 @@ namespace DDR4_TestingApp
             SetBoolPill(uiStatus, "UI", info.UiClock);
             SetBoolPill(calbStatus, "CALIBRATED", info.ControllerCalibrated);
 
-            SetBoolPill(activeStatus, "ACTIVE", info.BeamPresent);
-            SetBoolPill(possibleStatus, "POSSIBLE", info.BeamPossible);
+            // --- Facility services -------------------------------------------
+            //
+            // BeamServices is the beam-side counterpart of POWER SERVICES: true while
+            // something has reported beam state to the ZCU within the last 200 ms.
+            SetBoolPill(servicesStatus, info.BeamServices ? "ONLINE" : "OFFLINE",
+                                        info.BeamServices);
 
-            // Unlike every other pill here, this reflects an OUTPUT the ZCU drives
-            // rather than a line it senses. It should track BEAM REQUEST: both come
-            // from set_beam_request(). If it disagrees, either the beam override is
-            // forced, or something has driven the clamp line out of band with
-            // CMD_CLAMPCMD, which bypasses the REQUEST_BEAM global.
-            SetBoolPill(clampStatus, "CLAMP", info.ClampRequest);
+            // The ZCU's own request flag. Always meaningful — it is the server's
+            // REQUEST_BEAM global, which the engine owns and CMD_CLAMPCMD writes.
+            // Compare it against the BEAM REQUEST pill in the relay pane: that one is
+            // what THIS launcher is doing, this one is what the ZCU is asking for.
+            SetBoolPill(beamRequestInfo, "BEAM REQUEST", info.BeamRequest);
+
+            // Beam-on-target, and the one reading that can be stale. With no services
+            // heartbeat nothing has fed the ZCU a beam state, so a false here is a
+            // default rather than a measurement — grey it instead of painting a
+            // confident red that says "no beam" when the truth is "nobody said".
+            if (info.BeamServices)
+                SetBoolPill(beamActiveInfo, "BEAM ACTIVE", info.BeamActive);
+            else
+                SetPill(beamActiveInfo, "NO DATA", OfflineColor);
 
             SetBoolPill(sdram0, "SDRAM 0", info.Sdram0);
             SetBoolPill(sdram1, "SDRAM 1", info.Sdram1);
             SetBoolPill(sdram2, "SDRAM 2", info.Sdram2);
             SetBoolPill(sdram3, "SDRAM 3", info.Sdram3);
+
+            ApplyPmic(info.Pmic);
         }
 
         private void ApplyInfoOffline()
@@ -1128,6 +1221,86 @@ namespace DDR4_TestingApp
             if (IsDisposed) return;
             foreach (var pill in StatusPills())
                 if (pill.BackColor != OfflineColor) pill.BackColor = OfflineColor;
+
+            ApplyPmicOffline(TcpManager.Status == TcpManager.ConnectionStatus.Connected
+                                 ? "unavailable" : "not connected");
+        }
+
+        // ====================== PMIC ======================
+
+        /// <summary>
+        /// Render the VCC1V2 rail reading. Null means the server could not produce one:
+        /// the IRPS5401 is not instantiated in the device tree behind the I2C1 mux, the
+        /// expected PMBus page is absent, or a sysfs read failed. That is a different
+        /// state from a rail reading zero, and it is shown differently.
+        ///
+        /// Only the voltage gets a verdict. A rail that has left +/-5% of 1.2 V is a
+        /// real fault; a current or power figure has no fixed envelope, because what the
+        /// PL happens to be driving moves it by more than any device would. Colouring
+        /// those green would say "nominal" about a number nobody has a threshold for.
+        /// </summary>
+        private void ApplyPmic(PowerStats? pmic)
+        {
+            if (IsDisposed) return;
+
+            if (pmic is not PowerStats p)
+            {
+                ApplyPmicOffline("PMIC not available");
+                return;
+            }
+
+            // A rail that has left +/-5% of 1.2 V is the one thing this pane can tell
+            // you that really matters mid-run, so it is not dropped just because the
+            // readouts are a uniform colour now: the voltage digits go red and the note
+            // says why. For plain yellow regardless, pass ReadoutText unconditionally
+            // below and delete the note override.
+            double slack = RailNominalVolts * RailToleranceFraction;
+            bool inTolerance = Math.Abs(p.Volts - RailNominalVolts) <= slack;
+
+            SetReadout(pmicVolts, $"{p.Volts:0.000} V",
+                       inTolerance ? ReadoutText : ReadoutAlarm);
+            SetReadout(pmicAmps, $"{p.Amps:0.000} A", ReadoutText);
+            SetReadout(pmicWatts, $"{p.Watts:0.000} W", ReadoutText);
+
+            // PowerDerived means the watts figure is Volts * Amps rather than the PMIC's
+            // own pout register — two readings that were not sampled at the same instant,
+            // so it drifts under a changing load. Worth saying so rather than presenting
+            // both numbers as equally measured.
+            string note = p.PowerDerived ? "VCC1V2 rail · P = V × I" : "VCC1V2 rail";
+            if (!inTolerance)
+                note = $"VCC1V2 OUT OF TOLERANCE (±{RailToleranceFraction * 100:0.#}% "
+                     + $"of {RailNominalVolts:0.0} V)";
+            SetNote(note);
+        }
+
+        /// <summary>
+        /// No reading. The background stays black and the digits dim rather than the
+        /// whole pill turning grey — an unlit readout, not a different control.
+        /// </summary>
+        private void ApplyPmicOffline(string note)
+        {
+            if (IsDisposed) return;
+            SetReadout(pmicVolts, "— V", ReadoutDim);
+            SetReadout(pmicAmps, "— A", ReadoutDim);
+            SetReadout(pmicWatts, "— W", ReadoutDim);
+            SetNote(note);
+        }
+
+        /// <summary>
+        /// Set one readout's text and digit colour. The background is black for the life
+        /// of the form (see ConfigureControls), so only the text moves here —
+        /// reassigning BackColor every refresh would force needless repaints at the info
+        /// poll rate.
+        /// </summary>
+        private static void SetReadout(Label readout, string text, Color ink)
+        {
+            if (readout.Text != text) readout.Text = text;
+            if (readout.ForeColor != ink) readout.ForeColor = ink;
+        }
+
+        private void SetNote(string text)
+        {
+            if (pmicNote.Text != text) pmicNote.Text = text;
         }
 
         private static void SetBoolPill(Button pill, string text, bool value)

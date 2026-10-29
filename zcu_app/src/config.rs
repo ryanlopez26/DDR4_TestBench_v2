@@ -47,6 +47,8 @@ pub const CMD_REQUESTPOWERSTATE: u8 = 0x17;
 pub const CMD_CLAMPCMD: u8 = 0x18;
 pub const CMD_EXPOSE: u8 = 0x19;
 
+pub const CMD_BEAMSERVICES: u8 = 0x1A;
+
 pub const PAGE_SIZE: usize = 1024; // Size of data pages for dump responses
 
 pub const UPDATE_FREQUENCY_MS: f32 = 100.0; // Frequency of progress updates during long operations

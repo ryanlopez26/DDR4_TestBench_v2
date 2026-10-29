@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{record::{Record, RecordType}, run::Run, task_engine::TaskRequest};
+use crate::{power::PowerStats, record::{Record, RecordType}, run::Run, task_engine::TaskRequest};
 
 // NOTE: `#[repr(C)]` controls the *in-memory* layout (for FFI / unsafe casts).
 // It does NOT control how serde + bincode lays bytes on the wire — that is
@@ -101,6 +101,18 @@ pub struct RequestPowerStateRsp {
 }
 
 
+#[repr(C)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct BeamServicesCmd {
+    pub beam_on: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct BeamServicesRsp {
+    pub beam_request: bool,
+}
+
 // Configuration Structure
 
 #[repr(C)]
@@ -140,15 +152,16 @@ pub struct ConfigCmd {
 
 #[repr(C)]
 #[derive(Debug, Deserialize, Serialize)]
-pub struct InfoRsp {
-    pub beam_possible: bool,
-    pub beam_present: bool,
+pub struct InfoRsp {                       
+    pub beam_active: bool,
+    pub beam_request: bool,
+    pub beam_services: bool,
+    pub pmic: Option<PowerStats>,
     pub power_services_provided: bool,
     pub controller_calibrated: bool,
     pub ui_clock: bool,
     pub pl_clock: bool,
     pub fpga_loaded: bool,
-    pub clamp_request: bool,
     pub sdram_0: bool,
     pub sdram_1: bool,
     pub sdram_2: bool,

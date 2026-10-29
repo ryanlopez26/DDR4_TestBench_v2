@@ -145,6 +145,8 @@ namespace DDR4_TestingApp
             exposureLimitEnabled.CheckedChanged += exposureLimitEnabled_CheckedChanged;
             exposureLimitMs.TextChanged += exposureLimitMs_TextChanged;
 
+            enableDumps.CheckedChanged += enableDumps_CheckedChanged;
+
             flashFPGA.Click += flashFPGA_Click;
             refreshFPGA.Click += refreshFPGA_Click;
             sendConfig.Click += sendConfig_Click;
@@ -181,6 +183,8 @@ namespace DDR4_TestingApp
 
                 exposureLimitEnabled.Checked = Config.ExposureTimeLimitEnabled;
                 exposureLimitMs.Text = Config.ExposureTimeLimitMs.ToString("0.###");
+
+                enableDumps.Checked = Config.EnableLogging;
             }
             finally
             {
@@ -426,6 +430,23 @@ namespace DDR4_TestingApp
             exposureSeconds.Text = Config.ExposureTimeLimitEnabled
                 ? $"= {seconds:0.##} s"
                 : "(off)";
+        }
+
+        // ============================== Dumps / logging ==============================
+
+        /// <summary>
+        /// Drives ConfigCmd.enable_logging (wire offset 7), which gates the server's
+        /// recorder — the capture files written under /dvr, not the DUMP command. A
+        /// dump request still works with this unticked; what stops is the server
+        /// persisting anything from a write/verify/dynamic pass.
+        ///
+        /// Takes effect only on the next Send Config, like every other field here.
+        /// </summary>
+        private void enableDumps_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (loading) return;
+            Config.EnableLogging = enableDumps.Checked;
+            RefreshSyncStatus();
         }
 
         // ============================== FPGA ==============================

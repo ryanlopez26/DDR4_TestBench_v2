@@ -57,9 +57,6 @@
             configEditor = new Button();
             launchRecordManager = new Button();
             groupBox8 = new GroupBox();
-            button3 = new Button();
-            button2 = new Button();
-            labl1 = new Button();
             groupBox9 = new GroupBox();
             psStatus = new Button();
             fpgaStatus = new Button();
@@ -82,9 +79,9 @@
             groupBox11 = new GroupBox();
             contactorStatus = new Button();
             groupBox18 = new GroupBox();
-            clampStatus = new Button();
-            activeStatus = new Button();
-            possibleStatus = new Button();
+            servicesStatus = new Button();
+            beamRequestInfo = new Button();
+            beamActiveInfo = new Button();
             groupBox19 = new GroupBox();
             sdram3 = new Button();
             sdram2 = new Button();
@@ -104,6 +101,11 @@
             beamOn = new Button();
             beamAUTO = new Button();
             beamOFF = new Button();
+            groupBox25 = new GroupBox();
+            pmicVolts = new Label();
+            pmicAmps = new Label();
+            pmicWatts = new Label();
+            pmicNote = new Label();
             groupBox1.SuspendLayout();
             groupBox17.SuspendLayout();
             groupBox4.SuspendLayout();
@@ -135,6 +137,7 @@
             groupBox23.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)relayID_beam).BeginInit();
             groupBox22.SuspendLayout();
+            groupBox25.SuspendLayout();
             SuspendLayout();
             // 
             // groupBox1
@@ -293,9 +296,9 @@
             // launchRunEditor
             // 
             launchRunEditor.BackgroundImageLayout = ImageLayout.None;
-            launchRunEditor.Location = new Point(126, 107);
+            launchRunEditor.Location = new Point(10, 82);
             launchRunEditor.Name = "launchRunEditor";
-            launchRunEditor.Size = new Size(119, 80);
+            launchRunEditor.Size = new Size(231, 54);
             launchRunEditor.TabIndex = 3;
             launchRunEditor.Text = "Run Manager";
             launchRunEditor.UseVisualStyleBackColor = true;
@@ -392,9 +395,9 @@
             // 
             // configEditor
             // 
-            configEditor.Location = new Point(10, 19);
+            configEditor.Location = new Point(10, 22);
             configEditor.Name = "configEditor";
-            configEditor.Size = new Size(110, 80);
+            configEditor.Size = new Size(231, 54);
             configEditor.TabIndex = 14;
             configEditor.Text = "Configuration Editor";
             configEditor.UseVisualStyleBackColor = true;
@@ -402,9 +405,9 @@
             // 
             // launchRecordManager
             // 
-            launchRecordManager.Location = new Point(10, 104);
+            launchRecordManager.Location = new Point(10, 142);
             launchRecordManager.Name = "launchRecordManager";
-            launchRecordManager.Size = new Size(110, 86);
+            launchRecordManager.Size = new Size(231, 54);
             launchRecordManager.TabIndex = 15;
             launchRecordManager.Text = "Record Manager";
             launchRecordManager.UseVisualStyleBackColor = true;
@@ -412,48 +415,15 @@
             // 
             // groupBox8
             // 
-            groupBox8.Controls.Add(button3);
-            groupBox8.Controls.Add(button2);
-            groupBox8.Controls.Add(labl1);
             groupBox8.Controls.Add(launchRecordManager);
             groupBox8.Controls.Add(configEditor);
             groupBox8.Controls.Add(launchRunEditor);
             groupBox8.Location = new Point(14, 12);
             groupBox8.Name = "groupBox8";
-            groupBox8.Size = new Size(251, 284);
+            groupBox8.Size = new Size(251, 199);
             groupBox8.TabIndex = 13;
             groupBox8.TabStop = false;
             groupBox8.Text = "Apps";
-            // 
-            // button3
-            // 
-            button3.BackgroundImageLayout = ImageLayout.None;
-            button3.Location = new Point(10, 196);
-            button3.Name = "button3";
-            button3.Size = new Size(110, 80);
-            button3.TabIndex = 18;
-            button3.Text = "===";
-            button3.UseVisualStyleBackColor = true;
-            // 
-            // button2
-            // 
-            button2.BackgroundImageLayout = ImageLayout.None;
-            button2.Location = new Point(126, 198);
-            button2.Name = "button2";
-            button2.Size = new Size(119, 80);
-            button2.TabIndex = 17;
-            button2.Text = "===";
-            button2.UseVisualStyleBackColor = true;
-            // 
-            // labl1
-            // 
-            labl1.BackgroundImageLayout = ImageLayout.None;
-            labl1.Location = new Point(126, 19);
-            labl1.Name = "labl1";
-            labl1.Size = new Size(119, 80);
-            labl1.TabIndex = 16;
-            labl1.Text = "===";
-            labl1.UseVisualStyleBackColor = true;
             // 
             // groupBox9
             // 
@@ -677,45 +647,45 @@
             // 
             // groupBox18
             // 
-            groupBox18.Controls.Add(clampStatus);
-            groupBox18.Controls.Add(activeStatus);
-            groupBox18.Controls.Add(possibleStatus);
+            groupBox18.Controls.Add(servicesStatus);
+            groupBox18.Controls.Add(beamRequestInfo);
+            groupBox18.Controls.Add(beamActiveInfo);
             groupBox18.Location = new Point(820, 132);
             groupBox18.Name = "groupBox18";
             groupBox18.Size = new Size(115, 164);
             groupBox18.TabIndex = 20;
             groupBox18.TabStop = false;
-            groupBox18.Text = "IO Status";
+            groupBox18.Text = "Facility Services";
             // 
-            // clampStatus
+            // servicesStatus
             // 
-            clampStatus.Enabled = false;
-            clampStatus.Location = new Point(11, 22);
-            clampStatus.Name = "clampStatus";
-            clampStatus.Size = new Size(92, 40);
-            clampStatus.TabIndex = 8;
-            clampStatus.Text = "CLAMP";
-            clampStatus.UseVisualStyleBackColor = true;
+            servicesStatus.Enabled = false;
+            servicesStatus.Location = new Point(11, 22);
+            servicesStatus.Name = "servicesStatus";
+            servicesStatus.Size = new Size(92, 40);
+            servicesStatus.TabIndex = 8;
+            servicesStatus.Text = "ONLINE";
+            servicesStatus.UseVisualStyleBackColor = true;
             // 
-            // activeStatus
+            // beamRequestInfo
             // 
-            activeStatus.Enabled = false;
-            activeStatus.Location = new Point(11, 67);
-            activeStatus.Name = "activeStatus";
-            activeStatus.Size = new Size(92, 40);
-            activeStatus.TabIndex = 7;
-            activeStatus.Text = "ACTIVE";
-            activeStatus.UseVisualStyleBackColor = true;
+            beamRequestInfo.Enabled = false;
+            beamRequestInfo.Location = new Point(11, 67);
+            beamRequestInfo.Name = "beamRequestInfo";
+            beamRequestInfo.Size = new Size(92, 40);
+            beamRequestInfo.TabIndex = 7;
+            beamRequestInfo.Text = "Beam Request";
+            beamRequestInfo.UseVisualStyleBackColor = true;
             // 
-            // possibleStatus
+            // beamActiveInfo
             // 
-            possibleStatus.Enabled = false;
-            possibleStatus.Location = new Point(11, 113);
-            possibleStatus.Name = "possibleStatus";
-            possibleStatus.Size = new Size(92, 40);
-            possibleStatus.TabIndex = 6;
-            possibleStatus.Text = "POSSIBLE";
-            possibleStatus.UseVisualStyleBackColor = true;
+            beamActiveInfo.Enabled = false;
+            beamActiveInfo.Location = new Point(11, 113);
+            beamActiveInfo.Name = "beamActiveInfo";
+            beamActiveInfo.Size = new Size(92, 40);
+            beamActiveInfo.TabIndex = 6;
+            beamActiveInfo.Text = "Beam Active";
+            beamActiveInfo.UseVisualStyleBackColor = true;
             // 
             // groupBox19
             // 
@@ -809,7 +779,7 @@
             groupBox21.Size = new Size(230, 164);
             groupBox21.TabIndex = 21;
             groupBox21.TabStop = false;
-            groupBox21.Text = "Beam Control";
+            groupBox21.Text = "Beam Relay";
             // 
             // groupBox24
             // 
@@ -918,11 +888,74 @@
             beamOFF.Text = "OFF";
             beamOFF.UseVisualStyleBackColor = true;
             // 
+            // groupBox25
+            // 
+            groupBox25.Controls.Add(pmicVolts);
+            groupBox25.Controls.Add(pmicAmps);
+            groupBox25.Controls.Add(pmicWatts);
+            groupBox25.Controls.Add(pmicNote);
+            groupBox25.Location = new Point(14, 215);
+            groupBox25.Name = "groupBox25";
+            groupBox25.Size = new Size(251, 84);
+            groupBox25.TabIndex = 21;
+            groupBox25.TabStop = false;
+            groupBox25.Text = "PMIC Status";
+            // 
+            // pmicVolts
+            // 
+            pmicVolts.AutoSize = false;
+            pmicVolts.BackColor = Color.Black;
+            pmicVolts.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            pmicVolts.ForeColor = Color.Yellow;
+            pmicVolts.Location = new Point(8, 22);
+            pmicVolts.Name = "pmicVolts";
+            pmicVolts.Size = new Size(76, 30);
+            pmicVolts.TabIndex = 0;
+            pmicVolts.Text = "— V";
+            pmicVolts.TextAlign = ContentAlignment.MiddleCenter;
+            // 
+            // pmicAmps
+            // 
+            pmicAmps.AutoSize = false;
+            pmicAmps.BackColor = Color.Black;
+            pmicAmps.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            pmicAmps.ForeColor = Color.Yellow;
+            pmicAmps.Location = new Point(88, 22);
+            pmicAmps.Name = "pmicAmps";
+            pmicAmps.Size = new Size(76, 30);
+            pmicAmps.TabIndex = 1;
+            pmicAmps.Text = "— A";
+            pmicAmps.TextAlign = ContentAlignment.MiddleCenter;
+            // 
+            // pmicWatts
+            // 
+            pmicWatts.AutoSize = false;
+            pmicWatts.BackColor = Color.Black;
+            pmicWatts.Font = new Font("Segoe UI", 9.75F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            pmicWatts.ForeColor = Color.Yellow;
+            pmicWatts.Location = new Point(168, 22);
+            pmicWatts.Name = "pmicWatts";
+            pmicWatts.Size = new Size(76, 30);
+            pmicWatts.TabIndex = 2;
+            pmicWatts.Text = "— W";
+            pmicWatts.TextAlign = ContentAlignment.MiddleCenter;
+            // 
+            // pmicNote
+            // 
+            pmicNote.AutoSize = true;
+            pmicNote.ForeColor = SystemColors.GrayText;
+            pmicNote.Location = new Point(10, 58);
+            pmicNote.Name = "pmicNote";
+            pmicNote.Size = new Size(84, 15);
+            pmicNote.TabIndex = 3;
+            pmicNote.Text = "not connected";
+            // 
             // Launcher
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(947, 512);
+            Controls.Add(groupBox25);
             Controls.Add(groupBox21);
             Controls.Add(groupBox20);
             Controls.Add(groupBox19);
@@ -974,6 +1007,8 @@
             groupBox23.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)relayID_beam).EndInit();
             groupBox22.ResumeLayout(false);
+            groupBox25.ResumeLayout(false);
+            groupBox25.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -1005,9 +1040,6 @@
         private Button configEditor;
         private Button launchRecordManager;
         private GroupBox groupBox8;
-        private Button labl1;
-        private Button button3;
-        private Button button2;
         private GroupBox groupBox9;
         private Button psStatus;
         private Button fpgaStatus;
@@ -1032,9 +1064,9 @@
         private GroupBox groupBox17;
         private Label socketStatus;
         private GroupBox groupBox18;
-        private Button activeStatus;
-        private Button possibleStatus;
-        private Button clampStatus;
+        private Button beamActiveInfo;
+        private Button beamRequestInfo;
+        private Button servicesStatus;
         private GroupBox groupBox19;
         private Button sdram3;
         private Button sdram2;
@@ -1054,5 +1086,10 @@
         private GroupBox groupBox23;
         private NumericUpDown relayID_beam;
         private CheckBox invertRelay_beam;
+        private GroupBox groupBox25;
+        private Label pmicVolts;
+        private Label pmicAmps;
+        private Label pmicWatts;
+        private Label pmicNote;
     }
 }

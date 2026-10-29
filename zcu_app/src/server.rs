@@ -28,10 +28,11 @@ use std::thread;
 use bincode::Options;
 use serde::de::DeserializeOwned;
 
+use crate::commands::beamservices_command;
 use crate::record::RecordType;
 use crate::task_engine::TaskRequest;
-use crate::types::{ClampCmd, ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, ExposeCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
-use crate::{THREADS, archive, config::*, gpio, set_beam_request, task_engine};
+use crate::types::{BeamServicesCmd, ClampCmd, ConfigCmd, DeleteRecordCmd, DeleteRunCmd, DumpCmd, DynamicCmd, ExposeCmd, GetCaptureCmd, GetFPGAImageRsp, GetRecordCmd, GetRunCmd, RequestPowerStateCmd, SaveRunCmd, SetFPGAImageCmd, VerifyCmd, WriteCmd};
+use crate::{THREADS, archive, beam, config::*, gpio, task_engine};
 
 const MAX_PAYLOAD: u32 = 1 << 20;
 
@@ -373,10 +374,18 @@ fn handle_client(mut stream: TcpStream) {
             CMD_CLAMPCMD  => match parse_payload::<ClampCmd>(&payload) {
                 Ok(c) => {
 
-                    set_beam_request(c.state);
+                    beam::set_beam_request(c.state);
 
                 }
                 Err(e) => eprintln!("[!] {}: invalid clamp request params: {}", peer, e),
+            }, 
+            CMD_BEAMSERVICES  => match parse_payload::<BeamServicesCmd>(&payload) {
+                Ok(c) => {
+
+                    beamservices_command(&mut stream, c);
+
+                }
+                Err(e) => eprintln!("[!] {}: invalid beamstream params: {}", peer, e),
             }, 
             other => eprintln!("[!] {}: unknown CMD 0x{:02X}", peer, other),
         }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::power::PowerStats;
+
 #[repr(C)]
 #[derive(Debug, Deserialize, Serialize, Copy, Clone)]
 pub enum RecordType {
@@ -58,10 +60,13 @@ pub struct Record {
     pub log_bits_correct: Vec<u64>,
     pub log_error_rate: Vec<f64>,
     pub log_current_address: Vec<u32>,
-    pub log_beam_present: Vec<bool>,
-    pub log_beam_possible: Vec<bool>,
+    pub log_beam_active: Vec<bool>,
     pub log_beam_request: Vec<bool>,
     pub log_sefi_detected: Vec<bool>,
+
+    //Power stats
+    pub log_pmic: Vec<Option<PowerStats>>,
+
     pub log_adj_err_bins: Vec<[u64; 8]>,
     pub log_err_bins: Vec<[u64; 9]>,
 

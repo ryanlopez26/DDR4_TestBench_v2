@@ -21,7 +21,7 @@ pub fn flash_fpga(image_name: &str) -> bool {
         return false;
     }
 
-    let path: PathBuf = Path::new("/dvr/fpga").join(format!("{image_name}.bit.bin"));
+    let path: PathBuf = Path::new("/dvr/fpga").join(format!("{image_name}.bit"));
 
     if !path.is_file() {
         eprintln!("flash_fpga: {} not found", path.display());
@@ -92,7 +92,7 @@ pub fn list_fpga_images() -> Vec<String> {
         // compound suffix instead, which also filters out any other file
         // sitting in the directory (.bit, .bin, .xsa, notes.txt).
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Some(stem) = name.strip_suffix(".bit.bin") {
+            if let Some(stem) = name.strip_suffix(".bit") {
                 // Guards against a file named literally ".bit.bin", which
                 // would yield an empty name that flash_fpga rejects anyway.
                 if !stem.is_empty() {

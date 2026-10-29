@@ -579,13 +579,13 @@ mod backend {
         Ok(())
     }
 
-    pub fn get_beam_present() -> bool {
-        false
-    }
+    // pub fn get_beam_present() -> bool {
+    //     false
+    // }
 
-    pub fn get_beam_possible() -> bool {
-        false
-    }
+    // pub fn get_beam_possible() -> bool {
+    //     false
+    // }
 
     pub fn get_calibration_signal() -> bool {
         true
@@ -619,26 +619,26 @@ mod backend {
         out
     }
 
-    pub fn get_selected_sdram() -> Option<usize> {
-        Some(0)
-    }
+    // pub fn get_selected_sdram() -> Option<usize> {
+    //     Some(0)
+    // }
 
-    pub fn set_clamp_request(assert: bool) -> Result<(), GpioError> {
-        CLAMP_ASSERTED.store(assert, Ordering::SeqCst);
-        Ok(())
-    }
+    // pub fn set_clamp_request(assert: bool) -> Result<(), GpioError> {
+    //     CLAMP_ASSERTED.store(assert, Ordering::SeqCst);
+    //     Ok(())
+    // }
 
-    pub fn assert_clamp_request() -> Result<(), GpioError> {
-        set_clamp_request(true)
-    }
+    // pub fn assert_clamp_request() -> Result<(), GpioError> {
+    //     set_clamp_request(true)
+    // }
 
-    pub fn release_clamp_request() -> Result<(), GpioError> {
-        set_clamp_request(false)
-    }
+    // pub fn release_clamp_request() -> Result<(), GpioError> {
+    //     set_clamp_request(false)
+    // }
 
-    pub fn get_clamp_request() -> bool {
-        CLAMP_ASSERTED.load(Ordering::SeqCst)
-    }
+    // pub fn get_clamp_request() -> bool {
+    //     CLAMP_ASSERTED.load(Ordering::SeqCst)
+    // }
 }
 
 pub use backend::*;

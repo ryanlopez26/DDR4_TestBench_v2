@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bincode::Options;
 
 use crate::archive::{RECORD_LOG, RUN_LOG};
-use crate::{PM, archive, config, fpga, get_beam_request, gpio, task_engine, types::*};
+use crate::{PM, archive, beam, config, fpga, gpio, power, task_engine, types::*};
 
 use crate::server::send_response;
 use crate::config::*;
@@ -90,8 +90,10 @@ pub fn info_command(stream: &mut TcpStream){
         ui_clock: gpio::get_ui_clock_signal(),
         pl_clock: gpio::get_pl_clock_signal(),
         fpga_loaded: gpio::get_fpga_loaded_status(),
-        beam_possible: gpio::get_beam_possible(),
-        beam_present: gpio::get_beam_present(),
+        beam_active: beam::is_beam_active(),
+        beam_request: beam::get_beam_request(),
+        beam_services: beam::beam_services_active(),
+        pmic: power::read_sodimm_power(),
         power_services_provided: {
                 //Check if power services are present
                 match PM.read().unwrap().last_power_check {
@@ -105,7 +107,6 @@ pub fn info_command(stream: &mut TcpStream){
                     None => false,
                 }
         },
-        clamp_request: gpio::get_clamp_request(),
         sdram_0: gpio::get_sdram_select(0),
         sdram_1: gpio::get_sdram_select(1),
         sdram_2: gpio::get_sdram_select(2),
@@ -118,6 +119,8 @@ pub fn info_command(stream: &mut TcpStream){
     send_response(stream, CMD_INFO, payload).unwrap();
     
 }
+
+
 
 pub fn getrecord_command(stream: &mut TcpStream, cmd: GetRecordCmd){
 
@@ -141,6 +144,24 @@ pub fn getrecord_command(stream: &mut TcpStream, cmd: GetRecordCmd){
     send_response(stream, CMD_GETRECORD, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
     
 }
+
+
+pub fn beamservices_command(stream: &mut TcpStream, cmd: BeamServicesCmd){
+
+    // Response struct
+    let mut rsp= BeamServicesRsp {
+        beam_request: beam::get_beam_request(),
+    };
+
+    //Apply status
+    *beam::BEAM_ON.write().unwrap() = cmd.beam_on;
+    *beam::BEAM_SERVICES.write().unwrap() = Some(Instant::now());
+
+    //Send response
+    send_response(stream, CMD_BEAMSERVICES, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
+    
+}
+
 
 pub fn saverun_command(stream: &mut TcpStream, cmd: SaveRunCmd){
 
@@ -300,7 +321,7 @@ pub fn getpowermode_command(stream: &mut TcpStream) {
     let mut rsp = GetPowerModeRsp {
         request_poweroff: false,
         request_reboot: false,
-        request_beam: get_beam_request()
+        request_beam: beam::get_beam_request()
     };
 
     //Check if we are in safe mode

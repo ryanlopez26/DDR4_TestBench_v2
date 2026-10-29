@@ -79,6 +79,7 @@ namespace DDR4_TestingApp
         {
             requestWrite.Click += async (s, e) => await QueueRequestAsync(RecordType.Write);
             requestVerify.Click += async (s, e) => await QueueRequestAsync(RecordType.Verify);
+            requestExpose.Click += async (s, e) => await QueueRequestAsync(RecordType.Expose);
             requestRead.Click += async (s, e) => await QueueRequestAsync(RecordType.Read);
             requestDynamic.Click += async (s, e) => await QueueRequestAsync(RecordType.Dynamic);
 
@@ -100,6 +101,7 @@ namespace DDR4_TestingApp
             bool connected = TcpManager.Status == TcpManager.ConnectionStatus.Connected;
             requestWrite.Enabled = connected;
             requestVerify.Enabled = connected;
+            requestExpose.Enabled = connected;
             requestRead.Enabled = connected;
             requestDynamic.Enabled = connected;
         }
@@ -188,6 +190,7 @@ namespace DDR4_TestingApp
         {
             requestWrite.Enabled = enabled;
             requestVerify.Enabled = enabled;
+            requestExpose.Enabled = enabled;
             requestRead.Enabled = enabled;
             requestDynamic.Enabled = enabled;
         }
@@ -407,6 +410,11 @@ namespace DDR4_TestingApp
             || ex is InvalidOperationException;
 
         private void splitContainer1_Panel2_Paint(object sender, PaintEventArgs e)
+        {
+
+        }
+
+        private void requestVerify_Click(object sender, EventArgs e)
         {
 
         }
