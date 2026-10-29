@@ -577,7 +577,7 @@ pub fn engine_main(){
                                     r.log_bits_incorrect.push(r.incorrect_bits);
                                     r.log_bits_correct.push(r.correct_bits);
                                     r.log_bits_processed.push(r.processed_bits);
-                                    r.log_beam_active.push(beam::is_beam_active());
+                                    r.log_beam_active.push(beam::is_beam_active_trusted());
                                     r.log_beam_request.push(beam::get_beam_request());
                                     r.log_pmic.push(power::read_sodimm_power());
                                     r.log_current_address.push(at as u32);
@@ -741,7 +741,7 @@ pub fn engine_main(){
                                     r.log_bits_incorrect.push(incorrect);
                                     r.log_bits_correct.push(correct);
                                     r.log_bits_processed.push(r.processed_bits);
-                                    r.log_beam_active.push(beam::is_beam_active());
+                                    r.log_beam_active.push(beam::is_beam_active_trusted());
                                     r.log_beam_request.push(beam::get_beam_request());
                                     r.log_pmic.push(power::read_sodimm_power());
                                     r.log_current_address.push(at as u32);
@@ -802,7 +802,7 @@ pub fn engine_main(){
                                     last_update = Instant::now();
 
                                     r.log_timestamp.push(start.elapsed().as_secs_f64());
-                                    r.log_beam_active.push(beam::is_beam_active());
+                                    r.log_beam_active.push(beam::is_beam_active_trusted());
                                     r.log_beam_request.push(beam::get_beam_request());
                                     r.log_pmic.push(power::read_sodimm_power());
                                     r.log_bits_incorrect.push(r.incorrect_bits);
@@ -836,7 +836,7 @@ pub fn engine_main(){
                         let mut parked = true;
 
                         while parked {
-                            let b = beam::is_beam_active();
+                            let b = beam::is_beam_active_trusted();
 
                             if !b {
                                 b_last_low = Instant::now();
@@ -852,7 +852,7 @@ pub fn engine_main(){
                                 last_update = Instant::now();
 
                                 r.log_timestamp.push(start.elapsed().as_secs_f64());
-                                r.log_beam_active.push(beam::is_beam_active());
+                                r.log_beam_active.push(beam::is_beam_active_trusted());
                                 r.log_beam_request.push(beam::get_beam_request());
                                 r.log_pmic.push(power::read_sodimm_power());
                                 r.log_sefi_detected.push(false);
@@ -963,7 +963,7 @@ pub fn engine_main(){
 
                                     // Beam poll, once per chunk. At 4 KB this is
                                     // still far finer than the 200 ms debounce.
-                                    let b = beam::is_beam_active();
+                                    let b = beam::is_beam_active_trusted();
                                     if b {
                                         b_last_high = Instant::now();
                                     }
@@ -1018,7 +1018,7 @@ pub fn engine_main(){
                                         r.log_bits_incorrect.push(incorrect);
                                         r.log_bits_correct.push(correct);
                                         r.log_bits_processed.push(r.processed_bits);
-                                        r.log_beam_active.push(beam::is_beam_active());
+                                        r.log_beam_active.push(beam::is_beam_active_trusted());
                                         r.log_beam_request.push(beam::get_beam_request());
                                         r.log_pmic.push(power::read_sodimm_power());
                                         r.log_current_address.push(at as u32);
@@ -1062,8 +1062,12 @@ pub fn engine_main(){
                     // ================================================ EXPOSE
                     record::RecordType::Expose => {
 
-                        //Initialize timing variables
-                        let mut active_last_low = Instant::now();
+                        //Initialize timing variables.
+                        //
+                        // active_last_low is gone: on_since below is the only
+                        // thing tracking beam-on intervals now, and leaving a
+                        // second half-maintained timer around is exactly how the
+                        // accumulation bug got reintroduced twice.
                         let mut active_last_high = Instant::now();
 
                         // Accumulated beam-on time, and the instant the current
@@ -1077,6 +1081,12 @@ pub fn engine_main(){
                         // sat 10 minutes with 30 s of beam reported ~10 minutes.
                         let mut exposure_total: Duration = Duration::new(0, 0);
 
+                        //Has started flag
+                        let mut has_started: bool = false;
+
+                        //For falling edge detection
+                        let mut on_since: Option<Instant> = None;
+
                         //Delayed exit timer (used to allow signals to settle before ending the record)
                         let mut delayed_exit: Option<Instant> = None;
 
@@ -1086,27 +1096,33 @@ pub fn engine_main(){
                         //Keep looping
                         loop {
 
-                            //Update timers
-                            if beam::is_beam_active() {
+                            if beam::is_beam_active_trusted() {
+                                has_started = true;
                                 active_last_high = Instant::now();
-
+                                if on_since.is_none() { on_since = Some(Instant::now()); }
                             } else {
-                                active_last_low = Instant::now();
+                                // Falling edge: bank the interval that just ended.
+                                if let Some(t) = on_since.take() { exposure_total += t.elapsed(); }
                             }
-
-                            // Live total including the interval in progress.
-                            let exposure_time = (exposure_total + active_last_low.elapsed());
-
-
+                            let exposure_time = exposure_total + on_since.map(|t| t.elapsed()).unwrap_or_default();
+                            
                             //Check if we need to update
                             if last_update.elapsed() > UPDATE_FREQUENCY {
 
                                 //Reset watchdog
                                 last_update = Instant::now();
 
+                                // Publish the running total into the record.
+                                // Without this r.exposure_time stays None for the
+                                // whole run: the client's live readout shows
+                                // nothing, and an aborted Expose is submitted
+                                // reporting no exposure at all even though beam
+                                // was delivered.
+                                r.exposure_time = Some(exposure_time.as_secs_f64());
+
                                 //Record datapoints
                                 r.log_timestamp.push(start.elapsed().as_secs_f64());
-                                r.log_beam_active.push(beam::is_beam_active());
+                                r.log_beam_active.push(beam::is_beam_active_trusted());
                                 r.log_beam_request.push(beam::get_beam_request());
                                 r.log_pmic.push(power::read_sodimm_power());
 
@@ -1134,7 +1150,7 @@ pub fn engine_main(){
                             }
 
                             //End the test if beam goes low
-                            if active_last_high.elapsed() > SIGNAL_HOLD_REQUIREMENT && delayed_exit.is_none() {
+                            if active_last_high.elapsed() > SIGNAL_HOLD_REQUIREMENT && delayed_exit.is_none() && has_started {
 
                                 //Halt beam
                                 beam::set_beam_request(false);
@@ -1147,8 +1163,11 @@ pub fn engine_main(){
                             //End the test if exposure time limit is present and exceeded
                             if config.exposure_time_limit_enabled
                                 && delayed_exit.is_none()
-                                && config.exposure_time_limit_ms as f64
-                                    <= exposure_total.as_secs_f64() * 1000.0
+                                // exposure_time, NOT exposure_total: the latter
+                                // only advances on a falling edge, so against a
+                                // continuous beam -- the normal case -- it stays
+                                // at zero and this limit never fires at all.
+                                && config.exposure_time_limit_ms <= exposure_time.as_secs_f64() * 1000.0
                             {                              
 
                                 //Request clamp
@@ -1174,7 +1193,14 @@ pub fn engine_main(){
                         }
 
 
-                        r.exposure_time = Some((exposure_total + active_last_low.elapsed()).as_secs_f64());
+                        // Bank whatever interval was still open at exit. The old
+                        // expression reached for active_last_low.elapsed(), which
+                        // happened to land near the right answer on the usual
+                        // exit paths and was wrong by construction.
+                        if let Some(t) = on_since.take() {
+                            exposure_total += t.elapsed();
+                        }
+                        r.exposure_time = Some(exposure_total.as_secs_f64());
                     },
 
                 }

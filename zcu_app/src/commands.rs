@@ -124,8 +124,6 @@ pub fn info_command(stream: &mut TcpStream){
 
 pub fn getrecord_command(stream: &mut TcpStream, cmd: GetRecordCmd){
 
-    // Lock records archive
-    let reclog = archive::RECORD_LOG.read().unwrap();
 
     // Response struct
     let mut rsp: GetRecordRsp = GetRecordRsp {
@@ -133,7 +131,7 @@ pub fn getrecord_command(stream: &mut TcpStream, cmd: GetRecordCmd){
     };
 
     //Iterate over all records
-    for r in &(*reclog) {
+    for r in &(*archive::RECORD_LOG.read().unwrap()) {
         if r.rid == cmd.uuid {
             //Found the record
             rsp.record = Some(r.clone());
@@ -201,8 +199,7 @@ pub fn getfpga_command(stream: &mut TcpStream){
 
 pub fn getrun_command(stream: &mut TcpStream, cmd: GetRunCmd){
 
-    // Lock records archive
-    let runlog = archive::RUN_LOG.read().unwrap();
+
 
     // Response struct
     let mut rsp: GetRunRsp = GetRunRsp {
@@ -210,7 +207,7 @@ pub fn getrun_command(stream: &mut TcpStream, cmd: GetRunCmd){
     };
 
     //Iterate over all records
-    for r in &(*runlog) {
+    for r in &(* archive::RUN_LOG.read().unwrap()) {
         if r.id == cmd.id {
             //Found the run
             rsp.run = Some(r.clone());
@@ -291,9 +288,17 @@ pub fn getcapture_command(stream: &mut TcpStream, cmd: GetCaptureCmd) {
 
 pub fn enginestatus_command(stream: &mut TcpStream) {
 
-    //Lock engine status and command structures
-    let eng_status = task_engine::STATUS.read().unwrap();
+    //Lock engine status and command structures.
+    //
+    // CMD BEFORE STATUS. Every other CMD+STATUS site in the tree takes them in
+    // that order -- notably fpga::flash_fpga, which holds CMD.write() across
+    // fpgautil and then reads STATUS. Taking them the other way round here was
+    // a lock-order inversion: this thread would hold STATUS.read and wait on
+    // CMD.read while flash_fpga held CMD.write and waited on STATUS.read, and
+    // the engine queueing a STATUS.write behind us blocks new readers (Rust's
+    // futex RwLock is write-preferring), closing the cycle into a deadlock.
     let eng_cmd = task_engine::CMD.read().unwrap();
+    let eng_status = task_engine::STATUS.read().unwrap();
 
     // Response struct
     let rsp = EngineStatusRsp {
@@ -305,6 +310,12 @@ pub fn enginestatus_command(stream: &mut TcpStream) {
         is_idle: eng_status.is_idle,
         queue: eng_cmd.task_queue.clone(),
     };
+
+    // Released in reverse acquisition order, before send_response: a client
+    // that disconnects mid-write panics here, and a panic with either guard
+    // held poisons it -- which kills the engine on its next loop.
+    drop(eng_status);
+    drop(eng_cmd);
 
     //Send response
     send_response(stream, CMD_ENGINESTATUS, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
@@ -342,6 +353,8 @@ pub fn getpowermode_command(stream: &mut TcpStream) {
         
     }
 
+    drop(pm);
+
     //Send response
     send_response(stream, CMD_GETPOWERMODE, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
 }
@@ -372,6 +385,8 @@ pub fn listrecords_command(stream: &mut TcpStream) {
         rsp.time_duration.push(r.time_duration);
 
     } 
+
+    drop(list);
 
     //Send response
     send_response(stream, CMD_LISTRECORDS, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
@@ -408,6 +423,8 @@ pub fn listruns_command(stream: &mut TcpStream) {
         rsp.num_records.push(0);
         rsp.is_complete.push(false);
     } 
+
+    drop(list);
 
     //Send response
     send_response(stream, CMD_LISTRUNS, crate::server::codec().serialize(&rsp).unwrap()).unwrap();
